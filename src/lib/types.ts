@@ -1,7 +1,7 @@
 import type { Address } from "viem";
 import type { ResolvedAddress } from "./resolve";
 
-export type OracleFamily = "morpho" | "chainlink" | "euler" | "aave" | "unknown";
+export type OracleFamily = "morpho" | "morpho-meta" | "chainlink" | "euler" | "aave" | "unknown";
 
 /**
  * Raw config read from the oracle contract's view getters.

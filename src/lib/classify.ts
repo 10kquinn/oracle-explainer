@@ -2,7 +2,7 @@
  * Oracle family classification from ABI selectors.
  */
 
-export type OracleFamily = "morpho" | "chainlink" | "euler" | "aave" | "unknown";
+export type OracleFamily = "morpho" | "morpho-meta" | "chainlink" | "euler" | "aave" | "unknown";
 
 interface AbiItem {
   type?: string;
@@ -29,6 +29,16 @@ function hasFunction(
 export function classifyOracle(
   abi: readonly Record<string, unknown>[],
 ): OracleFamily {
+  // Steakhouse MetaOracleDeviationTimelock: wraps two IOracle with deviation switching
+  if (
+    hasFunction(abi, "price", []) &&
+    hasFunction(abi, "primaryOracle", []) &&
+    hasFunction(abi, "backupOracle", []) &&
+    hasFunction(abi, "deviationThreshold", [])
+  ) {
+    return "morpho-meta";
+  }
+
   // Morpho IOracle: price() -> uint256, no inputs
   if (
     hasFunction(abi, "price", []) &&

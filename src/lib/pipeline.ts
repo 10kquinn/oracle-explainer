@@ -11,7 +11,11 @@ import { resolveImplementation } from "./proxy";
 import { classifyOracle } from "./classify";
 import { readOracleConfig, readLivePrice } from "./reader";
 import { morphoAdapter, readMorphoLiveValues } from "../adapters/morpho";
-import type { OracleExplanation } from "./types";
+import {
+  morphoMetaAdapter,
+  readMetaOracleLiveValues,
+} from "../adapters/morpho-meta";
+import type { OracleExplanation, PricingPath } from "./types";
 
 export async function explainOracle(
   address: string,
@@ -22,16 +26,22 @@ export async function explainOracle(
 
   // Step 1: Resolve proxy if applicable
   const implAddr = await resolveImplementation(client, addr);
-  const targetAddr = implAddr ?? addr;
 
   // Step 2: Fetch contract source + ABI from Etherscan
-  // If it's a proxy, we need the implementation's ABI but read from the proxy address
-  let contractInfo;
+  // Try the address directly first. If Etherscan flags it as a proxy,
+  // fetch the implementation's ABI instead (covers EIP-1967, UUPS, etc.)
+  let contractInfo = await getContractSource(chainId, addr);
+
   if (implAddr) {
-    // Get implementation ABI
+    // EIP-1967 proxy detected — fetch implementation ABI
     contractInfo = await getContractSource(chainId, implAddr);
-  } else {
-    contractInfo = await getContractSource(chainId, addr);
+  } else if (contractInfo.isProxy && contractInfo.implementation) {
+    // Etherscan flagged as proxy — use their resolved implementation
+    const implInfo = await getContractSource(
+      chainId,
+      contractInfo.implementation,
+    );
+    contractInfo = implInfo;
   }
 
   // Step 3: Classify oracle family
@@ -40,11 +50,11 @@ export async function explainOracle(
   if (family === "unknown") {
     throw new Error(
       `Unknown oracle family for ${contractInfo.name}. ` +
-      `ABI selectors do not match any known oracle family.`,
+        `ABI selectors do not match any known oracle family.`,
     );
   }
 
-  if (family !== "morpho") {
+  if (family !== "morpho" && family !== "morpho-meta") {
     throw new Error(
       `Oracle family "${family}" is not yet supported. Only Morpho oracles are implemented in v1.`,
     );
@@ -53,15 +63,20 @@ export async function explainOracle(
   // Step 4: Read all config via multicall
   const { config, resolved } = await readOracleConfig(
     client,
-    addr, // Always read from the proxy address (which delegates to impl)
+    addr,
     contractInfo.abi,
   );
 
-  // Step 5: Read live values for the adapter
-  const liveValues = await readMorphoLiveValues(client, config);
+  // Step 5+6: Read live values and run family-specific adapter
+  let pricingPath: PricingPath;
 
-  // Step 6: Run the adapter
-  const pricingPath = morphoAdapter(config, resolved, liveValues);
+  if (family === "morpho-meta") {
+    const liveValues = await readMetaOracleLiveValues(client, addr);
+    pricingPath = morphoMetaAdapter(config, resolved, liveValues);
+  } else {
+    const liveValues = await readMorphoLiveValues(client, config);
+    pricingPath = morphoAdapter(config, resolved, liveValues);
+  }
 
   // Step 7: Read the live price for verification
   const livePrice = await readLivePrice(client, addr);
@@ -89,6 +104,6 @@ export async function explainOracle(
     livePrice,
     verified,
     creator,
-    prose: null, // LLM prose is added in the API route
+    prose: null,
   };
 }
