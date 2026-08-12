@@ -69,10 +69,24 @@ export async function explainOracle(
 
   // Step 5+6: Read live values and run family-specific adapter
   let pricingPath: PricingPath;
+  let underlyingOracles: Record<string, OracleExplanation> | undefined;
 
   if (family === "morpho-meta") {
     const liveValues = await readMetaOracleLiveValues(client, addr);
     pricingPath = morphoMetaAdapter(config, resolved, liveValues);
+
+    // Recursively explain both underlying oracles
+    const primaryAddr = config.primaryOracle as string;
+    const backupAddr = config.backupOracle as string;
+    if (primaryAddr && backupAddr) {
+      const [primaryExplanation, backupExplanation] = await Promise.all([
+        explainOracle(primaryAddr, chainId).catch(() => null),
+        explainOracle(backupAddr, chainId).catch(() => null),
+      ]);
+      underlyingOracles = {};
+      if (primaryExplanation) underlyingOracles.primary = primaryExplanation;
+      if (backupExplanation) underlyingOracles.backup = backupExplanation;
+    }
   } else {
     const liveValues = await readMorphoLiveValues(client, config);
     pricingPath = morphoAdapter(config, resolved, liveValues);
@@ -105,5 +119,6 @@ export async function explainOracle(
     verified,
     creator,
     prose: null,
+    underlyingOracles,
   };
 }

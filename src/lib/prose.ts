@@ -89,7 +89,7 @@ ${configStr}
 
 ## Standing caveats for this oracle family
 ${e.pricingPath.caveats.map((c, i) => `${i + 1}. ${c}`).join("\n")}
-
+${buildUnderlyingSection(e)}
 ---
 
 Write exactly four paragraphs with these headings:
@@ -102,5 +102,48 @@ Write exactly four paragraphs with these headings:
 
 **Who can change what** — Is this oracle immutable? Can any party update feeds, change parameters, or pause it? Who deployed it?
 
-Be precise and specific to THIS oracle's actual configuration. Do not be generic. Reference the actual resolved names, actual decimal values, actual active/disabled slots.`;
+Be precise and specific to THIS oracle's actual configuration. Do not be generic. Reference the actual resolved names, actual decimal values, actual active/disabled slots. If there are underlying oracles, explain how each one computes its price and how the wrapper selects between them.`;
+}
+
+function buildUnderlyingSection(e: OracleExplanation): string {
+  if (!e.underlyingOracles || Object.keys(e.underlyingOracles).length === 0) {
+    return "";
+  }
+
+  const sections: string[] = ["\n## Underlying oracles"];
+  for (const [role, oracle] of Object.entries(e.underlyingOracles)) {
+    const oracleConfigStr = JSON.stringify(
+      oracle.config,
+      (_, v) => (typeof v === "bigint" ? v.toString() : v),
+      2,
+    );
+    const oracleResolvedStr = JSON.stringify(oracle.resolved, null, 2);
+    const oracleComponentsStr = oracle.pricingPath.components
+      .map((c) => `  ${c.name} (${c.role}): ${c.source}`)
+      .join("\n");
+
+    sections.push(`
+### ${role.toUpperCase()} oracle — ${oracle.contractName} (${oracle.address})
+Family: ${oracle.family}
+Verified: ${oracle.verified ? "YES" : "NO"}
+
+Formula: ${oracle.pricingPath.formula}
+
+Components:
+${oracleComponentsStr}
+
+Derived: ${JSON.stringify(oracle.pricingPath.derived, null, 2)}
+
+Resolved dependencies:
+${oracleResolvedStr}
+
+Config:
+${oracleConfigStr}
+
+Caveats:
+${oracle.pricingPath.caveats.map((c, i) => `${i + 1}. ${c}`).join("\n")}
+`);
+  }
+
+  return sections.join("\n");
 }

@@ -54,4 +54,6 @@ export interface OracleExplanation {
   creator: { address: string; txHash: string } | null;
   /** LLM-generated prose (null if unverified) */
   prose: string | null;
+  /** Recursive explanations of underlying oracles (for wrapper types like MetaOracle) */
+  underlyingOracles?: Record<string, OracleExplanation>;
 }

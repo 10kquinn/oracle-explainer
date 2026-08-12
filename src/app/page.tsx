@@ -41,6 +41,7 @@ interface ExplanationResult {
   verified: boolean;
   creator: { address: string; txHash: string } | null;
   prose: string | null;
+  underlyingOracles?: Record<string, ExplanationResult>;
 }
 
 const CHAINS = [
@@ -534,6 +535,30 @@ function ResultView({ result }: { result: ExplanationResult }) {
           </div>
         </Section>
 
+        {/* Underlying oracles (for wrapper types like MetaOracle) */}
+        {result.underlyingOracles &&
+          Object.keys(result.underlyingOracles).length > 0 && (
+            <Section title="Underlying oracles">
+              <div className="space-y-4">
+                {Object.entries(result.underlyingOracles).map(
+                  ([role, oracle]) => (
+                    <UnderlyingOracleCard
+                      key={role}
+                      role={role}
+                      oracle={oracle}
+                      isActive={
+                        (role === "primary" &&
+                          result.pricingPath.derived.activeOracle === "primary") ||
+                        (role === "backup" &&
+                          result.pricingPath.derived.activeOracle === "backup")
+                      }
+                    />
+                  ),
+                )}
+              </div>
+            </Section>
+          )}
+
         {/* Configuration */}
         <Section title="Configuration">
           <div className="overflow-x-auto">
@@ -640,6 +665,192 @@ function ResultView({ result }: { result: ExplanationResult }) {
             </div>
           </Section>
         )}
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Underlying oracle card (for MetaOracle's primary/backup)           */
+/* ------------------------------------------------------------------ */
+
+function UnderlyingOracleCard({
+  role,
+  oracle,
+  isActive,
+}: {
+  role: string;
+  oracle: ExplanationResult;
+  isActive: boolean;
+}) {
+  return (
+    <div
+      className="rounded-md border overflow-hidden"
+      style={{
+        borderColor: isActive
+          ? "rgba(91, 141, 239, 0.3)"
+          : "var(--border)",
+        background: "var(--bg)",
+      }}
+    >
+      {/* Card header */}
+      <div
+        className="px-4 py-3 flex items-center justify-between"
+        style={{
+          borderBottom: "1px solid var(--border)",
+          background: isActive ? "rgba(91, 141, 239, 0.05)" : "transparent",
+        }}
+      >
+        <div className="flex items-center gap-2.5">
+          <span
+            className="text-xs font-mono font-medium uppercase px-1.5 py-0.5 rounded"
+            style={{
+              background: isActive
+                ? "var(--accent-dim)"
+                : "var(--surface-raised)",
+              color: isActive ? "var(--accent)" : "var(--text-tertiary)",
+            }}
+          >
+            {role}
+            {isActive ? " (active)" : ""}
+          </span>
+          <span
+            className="text-xs font-mono"
+            style={{ color: "var(--text-secondary)" }}
+          >
+            {oracle.contractName}
+          </span>
+          {oracle.verified && (
+            <span
+              className="text-[10px] font-mono px-1.5 py-0.5 rounded"
+              style={{
+                background: "var(--verified-dim)",
+                color: "var(--verified)",
+              }}
+            >
+              VERIFIED
+            </span>
+          )}
+        </div>
+        <a
+          href={addressLink(oracle.chainId, oracle.address)}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-xs font-mono hover:underline"
+          style={{ color: "var(--text-tertiary)" }}
+        >
+          {truncateAddress(oracle.address)}
+        </a>
+      </div>
+
+      {/* Formula */}
+      <div className="px-4 py-3" style={{ borderBottom: "1px solid var(--border)" }}>
+        <div
+          className="text-[10px] font-mono uppercase tracking-wider mb-2"
+          style={{ color: "var(--text-tertiary)" }}
+        >
+          Pricing formula
+        </div>
+        <pre
+          className="font-mono text-xs overflow-x-auto"
+          style={{ color: "var(--accent)" }}
+        >
+          {oracle.pricingPath.formula}
+        </pre>
+      </div>
+
+      {/* Components */}
+      <div className="px-4 py-3" style={{ borderBottom: "1px solid var(--border)" }}>
+        <div
+          className="text-[10px] font-mono uppercase tracking-wider mb-2"
+          style={{ color: "var(--text-tertiary)" }}
+        >
+          Components
+        </div>
+        <div className="space-y-1.5">
+          {oracle.pricingPath.components.map((c) => (
+            <div
+              key={c.name}
+              className="flex items-start gap-2 font-mono text-[11px]"
+            >
+              <span
+                className="px-1 py-0.5 rounded text-[9px] font-medium shrink-0 mt-px uppercase"
+                style={{
+                  background:
+                    c.role === "numerator"
+                      ? "var(--num-dim)"
+                      : "var(--den-dim)",
+                  color:
+                    c.role === "numerator" ? "var(--num)" : "var(--den)",
+                }}
+              >
+                {c.role === "numerator" ? "num" : "den"}
+              </span>
+              <span style={{ color: "var(--text-tertiary)" }}>{c.name}</span>
+              <span style={{ color: "var(--text-secondary)" }}>{c.source}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Config table */}
+      <div className="px-4 py-3">
+        <div
+          className="text-[10px] font-mono uppercase tracking-wider mb-2"
+          style={{ color: "var(--text-tertiary)" }}
+        >
+          Configuration
+        </div>
+        <table className="w-full text-[11px] font-mono">
+          <tbody>
+            {Object.entries(oracle.config).map(([key, value]) => {
+              const resolved = oracle.resolved[key];
+              const isAddr =
+                typeof value === "string" &&
+                value.startsWith("0x") &&
+                value.length === 42;
+              return (
+                <tr
+                  key={key}
+                  className="border-b"
+                  style={{ borderColor: "var(--border)" }}
+                >
+                  <td
+                    className="py-1.5 pr-3 whitespace-nowrap align-top"
+                    style={{ color: "var(--text-tertiary)" }}
+                  >
+                    {key}
+                  </td>
+                  <td
+                    className="py-1.5"
+                    style={{ color: "var(--text-secondary)" }}
+                  >
+                    {isAddr ? (
+                      <span className="flex items-center gap-2 flex-wrap">
+                        <a
+                          href={addressLink(oracle.chainId, String(value))}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="hover:underline"
+                          style={{ color: "var(--text-secondary)" }}
+                        >
+                          {truncateAddress(String(value))}
+                        </a>
+                        {resolved?.label && (
+                          <span style={{ color: "var(--text)" }}>
+                            {resolved.label}
+                          </span>
+                        )}
+                      </span>
+                    ) : (
+                      String(value)
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
       </div>
     </div>
   );
