@@ -1,0 +1,71 @@
+@import "tailwindcss";
+
+:root {
+  --bg: #0C0D0F;
+  --surface: #141518;
+  --surface-raised: #1A1B20;
+  --border: #1F2128;
+  --border-strong: #2A2C35;
+  --text: #E2E3E8;
+  --text-secondary: #6B7084;
+  --text-tertiary: #454860;
+  --accent: #5B8DEF;
+  --accent-dim: rgba(91, 141, 239, 0.08);
+  --verified: #34D399;
+  --verified-dim: rgba(52, 211, 153, 0.08);
+  --danger: #F87171;
+  --danger-dim: rgba(248, 113, 113, 0.08);
+  --num: #7CA8F4;
+  --num-dim: rgba(124, 168, 244, 0.06);
+  --den: #D4A06A;
+  --den-dim: rgba(212, 160, 106, 0.06);
+}
+
+@theme inline {
+  --color-background: var(--bg);
+  --color-foreground: var(--text);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+* {
+  border-color: var(--border);
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-geist-sans), system-ui, sans-serif;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 3px;
+}
+
+/* Loading pulse */
+@keyframes step-pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+.loading-step {
+  animation: step-pulse 1.8s ease-in-out infinite;
+}
+
+/* Verified badge glow */
+@keyframes verified-glow {
+  0% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.4); }
+  70% { box-shadow: 0 0 0 6px rgba(52, 211, 153, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0); }
+}
+.verified-badge {
+  animation: verified-glow 1s ease-out 0.3s 1;
+}
