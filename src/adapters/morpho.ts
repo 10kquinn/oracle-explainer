@@ -16,7 +16,14 @@ import type {
   ResolvedDependencies,
   PricingPath,
   PricingComponent,
+  FormulaExplanation,
 } from "../lib/types";
+import {
+  buildHumanPrice,
+  scaleDown,
+  shortNumber,
+  type HumanPrice,
+} from "../lib/format";
 
 const ZERO = zeroAddress;
 
@@ -132,13 +139,318 @@ export function morphoAdapter(
     resolved,
   );
 
+  // Name the two sides of the ratio so the output can be read without
+  // knowing which slot is which.
+  const baseSymbol = inferBaseSymbol(config, resolved);
+  const quoteSymbol = inferQuoteSymbol(config, resolved);
+  derived.baseSymbol = baseSymbol;
+  derived.quoteSymbol = quoteSymbol;
+
+  // Rescale out of Morpho's 36-decimal convention.
+  const humanPrice = buildMorphoHumanPrice(
+    recomputedPrice,
+    derived,
+    baseSymbol,
+    quoteSymbol,
+  );
+  if (humanPrice) derived.priceScaleExponent = humanPrice.exponent;
+
+  const formulaExplanation = explainFormula({
+    config,
+    resolved,
+    scaleFactor,
+    baseVaultConversionSample,
+    quoteVaultConversionSample,
+    values: {
+      baseVaultAssets,
+      baseFeed1Price,
+      baseFeed2Price,
+      quoteVaultAssets,
+      quoteFeed1Price,
+      quoteFeed2Price,
+    },
+    baseSymbol,
+    quoteSymbol,
+    humanPrice,
+    derived,
+  });
+
   return {
     formula,
+    formulaExplanation,
     recomputedPrice,
+    humanPrice,
     components,
     caveats: MORPHO_CAVEATS,
     derived,
   };
+}
+
+/* ------------------------------------------------------------------ */
+/*  Symbol inference                                                   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Split a Chainlink-style feed description ("wstETH / ETH") into its two legs.
+ * The left leg is the asset being priced, the right leg is the unit it is
+ * priced in.
+ */
+function feedPair(desc: string | null | undefined): {
+  base: string | null;
+  quote: string | null;
+} {
+  if (!desc) return { base: null, quote: null };
+  const parts = desc.split("/").map((x) => x.trim());
+  if (parts.length === 2 && parts[0] && parts[1]) {
+    return { base: parts[0], quote: parts[1] };
+  }
+  return { base: null, quote: null };
+}
+
+/** The collateral token — what one unit of the price is a unit of. */
+function inferBaseSymbol(
+  config: RawConfig,
+  resolved: ResolvedDependencies,
+): string | null {
+  if (!isZero(config.BASE_VAULT)) {
+    const v = resolved.BASE_VAULT;
+    if (v?.symbol) return v.symbol;
+  }
+  if (!isZero(config.BASE_FEED_1)) {
+    const pair = feedPair(resolved.BASE_FEED_1?.description);
+    if (pair.base) return pair.base;
+  }
+  return null;
+}
+
+/**
+ * The loan token — the unit the price is denominated in.
+ *
+ * Order matters: an explicit quote vault or quote feed names the loan asset
+ * directly. With the whole quote side disabled the loan asset is whatever unit
+ * the base side terminates in, which is the last active base feed's right leg,
+ * or failing that the base vault's own underlying asset.
+ */
+function inferQuoteSymbol(
+  config: RawConfig,
+  resolved: ResolvedDependencies,
+): string | null {
+  if (!isZero(config.QUOTE_VAULT)) {
+    const v = resolved.QUOTE_VAULT;
+    if (v?.symbol) return v.symbol;
+  }
+  if (!isZero(config.QUOTE_FEED_1)) {
+    const pair = feedPair(resolved.QUOTE_FEED_1?.description);
+    if (pair.base) return pair.base;
+  }
+  if (!isZero(config.BASE_FEED_2)) {
+    const pair = feedPair(resolved.BASE_FEED_2?.description);
+    if (pair.quote) return pair.quote;
+  }
+  if (!isZero(config.BASE_FEED_1)) {
+    const pair = feedPair(resolved.BASE_FEED_1?.description);
+    if (pair.quote) return pair.quote;
+  }
+  if (!isZero(config.BASE_VAULT)) {
+    const v = resolved.BASE_VAULT;
+    if (v?.assetSymbol) return v.assetSymbol;
+  }
+  return null;
+}
+
+/**
+ * Morpho's price convention is 10^(36 + loanDecimals - collateralDecimals).
+ * `quoteMinusBaseDecimals` is that decimal difference, recovered by inverting
+ * SCALE_FACTOR. Without it we cannot state a human price honestly, so we
+ * return null rather than guess an exponent.
+ */
+function buildMorphoHumanPrice(
+  recomputedPrice: bigint,
+  derived: Record<string, unknown>,
+  baseSymbol: string | null,
+  quoteSymbol: string | null,
+): HumanPrice | null {
+  const decDiff = derived.quoteMinusBaseDecimals;
+  if (typeof decDiff !== "number") return null;
+
+  return buildHumanPrice({
+    raw: recomputedPrice,
+    exponent: 36 + decDiff,
+    baseSymbol,
+    quoteSymbol,
+    basis:
+      `Morpho scales price by 10^(36 + loanDecimals - collateralDecimals). ` +
+      `Inverting SCALE_FACTOR gives loanDecimals - collateralDecimals = ${decDiff}, ` +
+      `so the raw value was divided by 10^${36 + decDiff}.`,
+  });
+}
+
+/* ------------------------------------------------------------------ */
+/*  Plain-English formula walkthrough                                  */
+/* ------------------------------------------------------------------ */
+
+/** Render a feed answer at its own decimals, e.g. 99987654 @ 8 -> "0.99987654". */
+function feedValueInWords(value: bigint, decimals: number | null): string {
+  if (decimals == null) return value.toString();
+  return scaleDown(value, decimals);
+}
+
+function explainFormula(ctx: {
+  config: RawConfig;
+  resolved: ResolvedDependencies;
+  scaleFactor: bigint;
+  baseVaultConversionSample: bigint;
+  quoteVaultConversionSample: bigint;
+  values: {
+    baseVaultAssets: bigint;
+    baseFeed1Price: bigint;
+    baseFeed2Price: bigint;
+    quoteVaultAssets: bigint;
+    quoteFeed1Price: bigint;
+    quoteFeed2Price: bigint;
+  };
+  baseSymbol: string | null;
+  quoteSymbol: string | null;
+  humanPrice: HumanPrice | null;
+  derived: Record<string, unknown>;
+}): FormulaExplanation {
+  const { config, resolved, values, baseSymbol, quoteSymbol, humanPrice } = ctx;
+
+  const base = baseSymbol ?? "the collateral token";
+  const quote = quoteSymbol ?? "the loan token";
+
+  const summary =
+    `This oracle answers one question: what is 1 ${base} worth, measured in ${quote}? ` +
+    `Every term below either contributes to that answer or is switched off.`;
+
+  const steps: string[] = [];
+
+  // --- numerator: value of the collateral ---
+  if (!isZero(config.BASE_VAULT)) {
+    const v = resolved.BASE_VAULT;
+    const label = v?.label ?? "the base vault";
+    const underlying = v?.assetSymbol ?? "its underlying asset";
+    const sample = ctx.baseVaultConversionSample;
+    steps.push(
+      `Start with the vault's own exchange rate. The oracle calls ` +
+        `${label}.convertToAssets(${shortNumber(sample)}) — how much ${underlying} would that ` +
+        `many share units redeem for? — and gets ${values.baseVaultAssets.toString()}. That ratio ` +
+        `is the vault's own internal accounting, total assets divided by total shares. It is not ` +
+        `a traded market price and nobody has to quote it for the oracle to work.`,
+    );
+  }
+
+  for (const [slot, price] of [
+    ["BASE_FEED_1", values.baseFeed1Price],
+    ["BASE_FEED_2", values.baseFeed2Price],
+  ] as const) {
+    if (isZero(config[slot])) continue;
+    const r = resolved[slot];
+    const pair = feedPair(r?.description);
+    const label = r?.label ?? slot;
+    const shown = feedValueInWords(price, r?.decimals ?? null);
+    const raw =
+      r?.decimals != null
+        ? ` (raw ${price.toString()}, ${r.decimals} decimals)`
+        : "";
+    // The first step has no running value to multiply into yet.
+    if (steps.length === 0) {
+      steps.push(
+        `Start with the ${label} feed, currently reporting ${shown}${raw}. ` +
+          (pair.base && pair.quote
+            ? `That is the price of one ${pair.base} in ${pair.quote}, and it is where the ` +
+              `collateral's value enters the calculation.`
+            : `That is where the collateral's value enters the calculation.`),
+      );
+    } else {
+      steps.push(
+        `Multiply by the ${label} feed, currently reporting ${shown}${raw}. ` +
+          (pair.base && pair.quote
+            ? `This converts the running value from ${pair.base} into ${pair.quote}.`
+            : `This converts the running value into the feed's quote unit.`),
+      );
+    }
+  }
+
+  // --- denominator: value of the loan asset ---
+  if (!isZero(config.QUOTE_VAULT)) {
+    const v = resolved.QUOTE_VAULT;
+    const label = v?.label ?? "the quote vault";
+    const sample = ctx.quoteVaultConversionSample;
+    steps.push(
+      `Divide by ${label}'s exchange rate — convertToAssets(${shortNumber(sample)}) = ` +
+        `${values.quoteVaultAssets.toString()} — because the loan asset is itself a vault share, ` +
+        `so its own redemption value has to be divided back out.`,
+    );
+  }
+
+  for (const [slot, price] of [
+    ["QUOTE_FEED_1", values.quoteFeed1Price],
+    ["QUOTE_FEED_2", values.quoteFeed2Price],
+  ] as const) {
+    if (isZero(config[slot])) continue;
+    const r = resolved[slot];
+    const pair = feedPair(r?.description);
+    const label = r?.label ?? slot;
+    const shown = feedValueInWords(price, r?.decimals ?? null);
+    steps.push(
+      `Divide by the ${label} feed, currently reporting ${shown}` +
+        (r?.decimals != null ? ` (raw ${price.toString()}, ${r.decimals} decimals)` : "") +
+        `. ` +
+        (pair.base
+          ? `This prices the loan asset ${pair.base} in the same common unit, so it cancels out and ` +
+            `the result ends up denominated in ${pair.base} rather than in that common unit.`
+          : `This prices the loan asset in the same common unit so that it cancels out.`),
+    );
+  }
+
+  // --- scale factor ---
+  const exponent = humanPrice?.exponent ?? null;
+  steps.push(
+    `Multiply by SCALE_FACTOR (${shortNumber(ctx.scaleFactor)}), a constant fixed once in the ` +
+      `constructor and never changeable afterwards. It carries no price information — it only ` +
+      `shifts the decimal point so the result lands in Morpho's fixed-point format` +
+      (exponent != null ? `, which here means the answer is scaled by 10^${exponent}.` : `.`),
+  );
+
+  // --- notes ---
+  const notes: string[] = [];
+
+  const disabled = (ctx.derived.disabledSlots as string[] | undefined) ?? [];
+  if (disabled.length > 0) {
+    notes.push(
+      `${disabled.length} of the 6 configurable slots are set to the zero address ` +
+        `(${disabled.join(", ")}). Morpho's helper libraries return 1 — not 0 — for the zero ` +
+        `address, so a disabled slot multiplies or divides by one and drops out of the equation ` +
+        `entirely. It does not zero the price.`,
+    );
+  }
+
+  const allFeedsOff =
+    isZero(config.BASE_FEED_1) &&
+    isZero(config.BASE_FEED_2) &&
+    isZero(config.QUOTE_FEED_1) &&
+    isZero(config.QUOTE_FEED_2);
+  if (allFeedsOff) {
+    notes.push(
+      `No external price feed is read at any point. The entire price is the vault's own ` +
+        `share-to-asset ratio, with ${quote} hardcoded at exactly parity. Whatever ${quote} is ` +
+        `actually trading at in the wider market never enters this contract.`,
+    );
+  } else if (isZero(config.QUOTE_FEED_1) && isZero(config.QUOTE_FEED_2)) {
+    notes.push(
+      `Both quote feed slots are disabled, so ${quote} is assumed to be worth exactly one unit ` +
+        `of the base side's terminal unit. No market price for the loan asset enters the contract.`,
+    );
+  }
+
+  if (humanPrice) {
+    notes.push(
+      `Rescaled out of that fixed-point format, the current answer reads: ${humanPrice.statement}.`,
+    );
+  }
+
+  return { summary, steps, notes };
 }
 
 function makeComponent(

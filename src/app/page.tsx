@@ -16,6 +16,24 @@ interface ResolvedAddr {
   owner: string | null;
   aggregator: string | null;
   aggregatorOwner: string | null;
+  asset: string | null;
+  assetSymbol: string | null;
+}
+
+interface HumanPrice {
+  value: string;
+  exponent: number;
+  baseSymbol: string | null;
+  quoteSymbol: string | null;
+  usdLike: boolean;
+  statement: string;
+  basis: string;
+}
+
+interface FormulaExplanation {
+  summary: string;
+  steps: string[];
+  notes: string[];
 }
 
 interface ExplanationResult {
@@ -27,6 +45,8 @@ interface ExplanationResult {
   resolved: Record<string, ResolvedAddr>;
   pricingPath: {
     formula: string;
+    formulaExplanation: FormulaExplanation;
+    humanPrice: HumanPrice | null;
     recomputedPrice: string;
     components: {
       name: string;
@@ -468,25 +488,20 @@ function ResultView({ result }: { result: ExplanationResult }) {
           >
             {result.pricingPath.formula}
           </pre>
+          <FormulaInPlainEnglish
+            explanation={result.pricingPath.formulaExplanation}
+          />
         </Section>
 
         {/* Verification numbers */}
         <Section title="Verification">
-          <div className="flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-8 font-mono text-sm">
-            <div>
-              <span style={{ color: "var(--text-tertiary)" }}>Recomputed </span>
-              <span style={{ color: "var(--text)" }}>
-                {result.pricingPath.recomputedPrice}
-              </span>
-            </div>
-            <div>
-              <span style={{ color: "var(--text-tertiary)" }}>Live call </span>
-              <span style={{ color: "var(--text)" }}>
-                {result.livePrice}
-              </span>
-            </div>
+          <div className="flex items-start justify-between gap-4 flex-wrap">
+            <PriceHeadline
+              human={result.pricingPath.humanPrice}
+              rawPrice={result.livePrice}
+            />
             <span
-              className="text-xs font-medium px-2 py-0.5 rounded self-start"
+              className="text-xs font-medium px-2 py-0.5 rounded shrink-0"
               style={{
                 background: result.verified
                   ? "var(--verified-dim)"
@@ -498,6 +513,34 @@ function ResultView({ result }: { result: ExplanationResult }) {
             >
               {result.verified ? "Exact match" : "MISMATCH"}
             </span>
+          </div>
+
+          <div
+            className="mt-4 pt-4 border-t space-y-1.5"
+            style={{ borderColor: "var(--border)" }}
+          >
+            <div className="flex flex-col sm:flex-row sm:gap-8 gap-1.5 font-mono text-xs">
+              <div className="break-all">
+                <span style={{ color: "var(--text-tertiary)" }}>Recomputed </span>
+                <span style={{ color: "var(--text-secondary)" }}>
+                  {result.pricingPath.recomputedPrice}
+                </span>
+              </div>
+              <div className="break-all">
+                <span style={{ color: "var(--text-tertiary)" }}>Live call </span>
+                <span style={{ color: "var(--text-secondary)" }}>
+                  {result.livePrice}
+                </span>
+              </div>
+            </div>
+            {result.pricingPath.humanPrice && (
+              <p
+                className="text-xs leading-relaxed"
+                style={{ color: "var(--text-tertiary)" }}
+              >
+                {result.pricingPath.humanPrice.basis}
+              </p>
+            )}
           </div>
         </Section>
 
@@ -757,6 +800,18 @@ function UnderlyingOracleCard({
         >
           {oracle.pricingPath.formula}
         </pre>
+        {oracle.pricingPath.humanPrice && (
+          <div
+            className="text-xs font-mono mt-2"
+            style={{ color: "var(--text-secondary)" }}
+          >
+            {oracle.pricingPath.humanPrice.statement}
+          </div>
+        )}
+        <FormulaInPlainEnglish
+          explanation={oracle.pricingPath.formulaExplanation}
+          compact
+        />
       </div>
 
       {/* Components */}
@@ -852,6 +907,154 @@ function UnderlyingOracleCard({
           </tbody>
         </table>
       </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Human-readable price headline                                      */
+/* ------------------------------------------------------------------ */
+
+function PriceHeadline({
+  human,
+  rawPrice,
+}: {
+  human: HumanPrice | null;
+  rawPrice: string;
+}) {
+  if (!human) {
+    return (
+      <div>
+        <div
+          className="text-[10px] font-mono uppercase tracking-wider mb-1.5"
+          style={{ color: "var(--text-tertiary)" }}
+        >
+          Current price
+        </div>
+        <div
+          className="font-mono text-sm break-all"
+          style={{ color: "var(--text)" }}
+        >
+          {rawPrice}
+        </div>
+        <p className="text-xs mt-1" style={{ color: "var(--text-tertiary)" }}>
+          The scaling exponent could not be recovered from SCALE_FACTOR, so no
+          decimal price is shown rather than a guessed one.
+        </p>
+      </div>
+    );
+  }
+
+  const display = human.usdLike
+    ? `$${human.value}`
+    : `${human.value}${human.quoteSymbol ? ` ${human.quoteSymbol}` : ""}`;
+
+  return (
+    <div>
+      <div
+        className="text-[10px] font-mono uppercase tracking-wider mb-1.5"
+        style={{ color: "var(--text-tertiary)" }}
+      >
+        Current price
+      </div>
+      <div
+        className="font-mono text-2xl leading-none tracking-tight"
+        style={{ color: "var(--text)" }}
+      >
+        {display}
+      </div>
+      <div
+        className="text-xs font-mono mt-2"
+        style={{ color: "var(--text-secondary)" }}
+      >
+        {human.baseSymbol ? `1 ${human.baseSymbol}` : "1 collateral token"}
+        {" = "}
+        {human.value} {human.quoteSymbol ?? "loan tokens"}
+      </div>
+      {human.usdLike && (
+        <div className="text-xs mt-1" style={{ color: "var(--text-tertiary)" }}>
+          Denominated in the loan asset
+          {human.quoteSymbol ? ` (${human.quoteSymbol})` : ""}, not in USD.
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Plain-English formula walkthrough                                  */
+/* ------------------------------------------------------------------ */
+
+function FormulaInPlainEnglish({
+  explanation,
+  compact,
+}: {
+  explanation: FormulaExplanation;
+  compact?: boolean;
+}) {
+  const bodySize = compact ? "text-[11px]" : "text-sm";
+  const numSize = compact ? "text-[9px]" : "text-[10px]";
+
+  return (
+    <div
+      className={`mt-4 pt-4 border-t ${compact ? "" : ""}`}
+      style={{ borderColor: "var(--border)" }}
+    >
+      <div
+        className={`${numSize} font-mono uppercase tracking-wider mb-2.5`}
+        style={{ color: "var(--text-tertiary)" }}
+      >
+        In plain English
+      </div>
+
+      <p
+        className={`${bodySize} leading-relaxed mb-3`}
+        style={{ color: "var(--text)" }}
+      >
+        {explanation.summary}
+      </p>
+
+      <ol className="space-y-2.5">
+        {explanation.steps.map((step, i) => (
+          <li key={i} className="flex gap-3">
+            <span
+              className={`${numSize} font-mono shrink-0 rounded w-5 h-5 flex items-center justify-center mt-px`}
+              style={{
+                background: "var(--accent-dim)",
+                color: "var(--accent)",
+              }}
+            >
+              {i + 1}
+            </span>
+            <span
+              className={`${bodySize} leading-relaxed`}
+              style={{ color: "var(--text-secondary)" }}
+            >
+              {step}
+            </span>
+          </li>
+        ))}
+      </ol>
+
+      {explanation.notes.length > 0 && (
+        <ul className="mt-3 space-y-2">
+          {explanation.notes.map((note, i) => (
+            <li
+              key={i}
+              className={`${bodySize} leading-relaxed flex gap-2`}
+              style={{ color: "var(--text-secondary)" }}
+            >
+              <span
+                className="shrink-0 mt-0.5"
+                style={{ color: "var(--text-tertiary)" }}
+              >
+                &bull;
+              </span>
+              <span>{note}</span>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

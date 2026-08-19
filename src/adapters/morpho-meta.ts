@@ -16,6 +16,7 @@ import type {
   ResolvedDependencies,
   PricingPath,
   PricingComponent,
+  FormulaExplanation,
 } from "../lib/types";
 
 export interface MetaOracleLiveValues {
@@ -93,13 +94,93 @@ export function morphoMetaAdapter(
     status: getStatus(live),
   };
 
+  const formulaExplanation = explainMetaFormula({
+    live,
+    primaryLabel,
+    backupLabel,
+    deviationPct,
+    deviationThresholdPct: Number(deviationThreshold) / 1e16,
+    challengeDuration: Number(challengeDuration),
+    healingDuration: Number(healingDuration),
+  });
+
   return {
     formula,
+    formulaExplanation,
     recomputedPrice,
+    // This wrapper has no decimals of its own to invert; the pipeline fills
+    // the human price in from whichever underlying oracle is active.
+    humanPrice: null,
     components,
     caveats: META_ORACLE_CAVEATS,
     derived,
   };
+}
+
+function formatDuration(seconds: number): string {
+  if (seconds % 86400 === 0) return `${seconds / 86400} day(s)`;
+  if (seconds % 3600 === 0) return `${seconds / 3600} hour(s)`;
+  if (seconds % 60 === 0) return `${seconds / 60} minute(s)`;
+  return `${seconds} seconds`;
+}
+
+function explainMetaFormula(ctx: {
+  live: MetaOracleLiveValues;
+  primaryLabel: string;
+  backupLabel: string;
+  deviationPct: number;
+  deviationThresholdPct: number;
+  challengeDuration: number;
+  healingDuration: number;
+}): FormulaExplanation {
+  const { live, primaryLabel, backupLabel } = ctx;
+  const activeName = live.isPrimary ? "primary" : "backup";
+  const activeLabel = live.isPrimary ? primaryLabel : backupLabel;
+  const idleLabel = live.isPrimary ? backupLabel : primaryLabel;
+
+  const summary =
+    `This contract computes no price of its own. It holds two independent oracles and passes ` +
+    `through whichever one is currently selected, watching the gap between them as a tripwire.`;
+
+  const steps: string[] = [
+    `Read both sources. The primary (${primaryLabel}) currently returns ` +
+      `${live.primaryPrice.toString()}; the backup (${backupLabel}) returns ` +
+      `${live.backupPrice.toString()}.`,
+    `Measure how far apart they are. The current gap is ${ctx.deviationPct.toFixed(4)}% against a ` +
+      `threshold of ${ctx.deviationThresholdPct}%, so the pair counts as ` +
+      `${live.isDeviant ? "diverged" : "converged"} right now.`,
+    `Return the selected oracle's price unchanged. The ${activeName} (${activeLabel}) is active, so ` +
+      `price() is exactly what ${activeLabel} reports — this wrapper neither averages the two nor ` +
+      `adjusts the number in any way.`,
+    `Switching sides is manual and delayed. Someone must start a challenge, then wait ` +
+      `${formatDuration(ctx.challengeDuration)} before the swap to the backup can be accepted; ` +
+      `returning to the primary requires the prices to reconverge and a further ` +
+      `${formatDuration(ctx.healingDuration)} of healing. Throughout either wait, the currently ` +
+      `active oracle keeps serving the price.`,
+  ];
+
+  const notes: string[] = [
+    `Because the returned value is passed through untouched, the real pricing logic lives one ` +
+      `level down in ${activeLabel}. The section below explains it.`,
+    `If the active oracle reverts, price() silently falls through to ${idleLabel}. Consumers ` +
+      `cannot tell from the return value alone whether they are being served normally or by that ` +
+      `fallback path.`,
+  ];
+
+  if (live.isChallenged) {
+    notes.push(
+      `A challenge is currently in progress — the timelock is ticking and the active oracle has ` +
+        `not yet been swapped.`,
+    );
+  }
+  if (live.isHealing) {
+    notes.push(
+      `Healing is currently in progress — the prices have reconverged and the timelock to return ` +
+        `to the primary is ticking.`,
+    );
+  }
+
+  return { summary, steps, notes };
 }
 
 function getStatus(live: MetaOracleLiveValues): string {

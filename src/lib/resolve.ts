@@ -16,6 +16,10 @@ export interface ResolvedAddress {
   owner: Address | null;
   aggregator: Address | null;
   aggregatorOwner: Address | null;
+  /** ERC4626 underlying asset, when the target is a vault. */
+  asset: Address | null;
+  /** Symbol of that underlying asset — names the unit a vault ratio is quoted in. */
+  assetSymbol: string | null;
 }
 
 const ZERO = zeroAddress;
@@ -68,6 +72,8 @@ export async function resolveAddress(
       owner: null,
       aggregator: null,
       aggregatorOwner: null,
+      asset: null,
+      assetSymbol: null,
     };
   }
 
@@ -75,7 +81,7 @@ export async function resolveAddress(
 
   // Try all calls in parallel — they'll fail silently if the contract
   // doesn't implement those functions.
-  const [symbol, name, decimals, description, owner, aggregator] =
+  const [symbol, name, decimals, description, owner, aggregator, asset] =
     await Promise.all([
       tryCall(
         client.readContract({
@@ -119,7 +125,27 @@ export async function resolveAddress(
           functionName: "aggregator",
         }),
       ),
+      tryCall(
+        client.readContract({
+          address: canonical,
+          abi: vaultAbi,
+          functionName: "asset",
+        }),
+      ),
     ]);
+
+  // 2nd hop: if the target is an ERC4626 vault, name its underlying asset.
+  // Without this the loan side of a feedless oracle has no human label at all.
+  let assetSymbol: string | null = null;
+  if (asset && !isZero(asset as Address)) {
+    assetSymbol = (await tryCall(
+      client.readContract({
+        address: asset as Address,
+        abi: erc20Abi,
+        functionName: "symbol",
+      }),
+    )) as string | null;
+  }
 
   // 2nd hop: if we got an aggregator, resolve its owner
   let aggregatorOwner: Address | null = null;
@@ -152,5 +178,7 @@ export async function resolveAddress(
     aggregatorOwner: aggregatorOwner
       ? getAddress(aggregatorOwner as Address)
       : null,
+    asset: asset && !isZero(asset as Address) ? getAddress(asset as Address) : null,
+    assetSymbol,
   };
 }

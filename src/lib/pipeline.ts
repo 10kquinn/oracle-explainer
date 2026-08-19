@@ -15,7 +15,40 @@ import {
   morphoMetaAdapter,
   readMetaOracleLiveValues,
 } from "../adapters/morpho-meta";
+import { buildHumanPrice } from "./format";
 import type { OracleExplanation, PricingPath } from "./types";
+
+/**
+ * A pass-through wrapper has no decimals of its own to invert. Reuse the
+ * scaling the active underlying oracle established, and recompute the decimal
+ * value from the wrapper's own verified price — never copy the inner number.
+ */
+function attachDelegatedHumanPrice(
+  pricingPath: PricingPath,
+  underlying: Record<string, OracleExplanation>,
+): PricingPath {
+  const activeRole =
+    pricingPath.derived.activeOracle === "backup" ? "backup" : "primary";
+  const ordered = [activeRole, activeRole === "primary" ? "backup" : "primary"];
+
+  for (const role of ordered) {
+    const ref = underlying[role]?.pricingPath.humanPrice;
+    if (!ref) continue;
+    return {
+      ...pricingPath,
+      humanPrice: buildHumanPrice({
+        raw: pricingPath.recomputedPrice,
+        exponent: ref.exponent,
+        baseSymbol: ref.baseSymbol,
+        quoteSymbol: ref.quoteSymbol,
+        basis:
+          `This wrapper returns the ${activeRole} oracle's price unchanged, so it inherits that ` +
+          `oracle's scaling. ${ref.basis}`,
+      }),
+    };
+  }
+  return pricingPath;
+}
 
 export async function explainOracle(
   address: string,
@@ -86,6 +119,12 @@ export async function explainOracle(
       underlyingOracles = {};
       if (primaryExplanation) underlyingOracles.primary = primaryExplanation;
       if (backupExplanation) underlyingOracles.backup = backupExplanation;
+
+      // The wrapper passes the active oracle's price through untouched, so it
+      // shares that oracle's scaling. Borrow the exponent and token labels the
+      // underlying adapter already derived rather than leaving the human
+      // price blank on the outer card.
+      pricingPath = attachDelegatedHumanPrice(pricingPath, underlyingOracles);
     }
   } else {
     const liveValues = await readMorphoLiveValues(client, config);

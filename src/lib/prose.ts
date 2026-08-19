@@ -70,10 +70,20 @@ function buildPrompt(e: OracleExplanation): string {
 - Family: ${e.family}
 - Creator: ${e.creator ? e.creator.address : "unknown"}
 - Verified: ${e.verified ? "YES — recomputed price matches live call exactly" : "NO — MISMATCH"}
-- Live price: ${e.livePrice.toString()}
+- Live price (raw): ${e.livePrice.toString()}
+- Live price (rescaled, computed deterministically — use this figure verbatim, do not recompute it): ${
+    e.pricingPath.humanPrice
+      ? `${e.pricingPath.humanPrice.statement} (${e.pricingPath.humanPrice.basis})`
+      : "not derivable — the scaling exponent could not be recovered, so do not state a decimal price"
+  }
 
 ## Formula
 ${e.pricingPath.formula}
+
+## Plain-English reading of the formula (already shown to the reader — do not repeat it verbatim)
+${e.pricingPath.formulaExplanation.summary}
+${e.pricingPath.formulaExplanation.steps.map((x, i) => `${i + 1}. ${x}`).join("\n")}
+${e.pricingPath.formulaExplanation.notes.map((x) => `- ${x}`).join("\n")}
 
 ## Components
 ${componentsStr}
@@ -101,6 +111,8 @@ Write exactly four paragraphs with these headings:
 **What it doesn't check** — What failure modes are structurally invisible to this oracle? What could go wrong that it would not detect?
 
 **Who can change what** — Is this oracle immutable? Can any party update feeds, change parameters, or pause it? Who deployed it?
+
+The reader is already shown the step-by-step formula walkthrough above, so do not restate it move for move — go past it to the implications. Never state a price figure other than the rescaled one given above, and never do arithmetic of your own.
 
 Be precise and specific to THIS oracle's actual configuration. Do not be generic. Reference the actual resolved names, actual decimal values, actual active/disabled slots. If there are underlying oracles, explain how each one computes its price and how the wrapper selects between them.`;
 }
