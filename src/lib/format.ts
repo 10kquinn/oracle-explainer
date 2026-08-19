@@ -31,6 +31,38 @@ export function shortNumber(v: bigint): string {
   return s;
 }
 
+/** 0x1234…abcd — enough to identify a contract in prose without a wall of hex. */
+export function shortAddress(addr: string): string {
+  if (!addr.startsWith("0x") || addr.length !== 42) return addr;
+  return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
+}
+
+/**
+ * Split a feed description into the asset it prices and the unit it prices in.
+ *
+ * Only "TICKER / TICKER" counts. Descriptions like "wstETH / ETH Exchange Rate"
+ * or "PST-USDC Exchange Rate (Calculated)" split into something that looks like
+ * a pair but is not one, and treating the right-hand side as a unit produces
+ * output like "1 wstETH = 1.207 ETH Exchange Rate". A leg has to look like a
+ * ticker — short, no whitespace — or we take neither.
+ */
+export function parseFeedPair(desc: string | null | undefined): {
+  base: string | null;
+  quote: string | null;
+} {
+  const none = { base: null, quote: null };
+  if (!desc) return none;
+
+  const parts = desc.split("/").map((x) => x.trim());
+  if (parts.length !== 2) return none;
+
+  const isTicker = (x: string) =>
+    x.length > 0 && x.length <= 12 && !/\s/.test(x);
+
+  if (!isTicker(parts[0]) || !isTicker(parts[1])) return none;
+  return { base: parts[0], quote: parts[1] };
+}
+
 export interface HumanPrice {
   /** Decimal string, e.g. "1.24401743" */
   value: string;
@@ -85,15 +117,16 @@ export function buildHumanPrice(opts: {
   const value = scaleDown(raw, exponent);
   const usdLike = isUsdLike(quoteSymbol);
 
-  const base = baseSymbol ?? "1 collateral token";
-  const lhs = baseSymbol ? `1 ${baseSymbol}` : base;
+  const lhs = baseSymbol ? `1 ${baseSymbol}` : "1 collateral token";
 
   let statement: string;
   if (quoteSymbol) {
     statement = `${lhs} = ${value} ${quoteSymbol}`;
     if (usdLike) statement += ` (≈ $${value})`;
   } else {
-    statement = `${lhs} = ${value} loan tokens`;
+    // "1 loan tokens" reads like a bug. Name the unit in the singular and say
+    // plainly that we could not identify it.
+    statement = `${lhs} = ${value} units of the loan token (unidentified)`;
   }
 
   return { value, exponent, baseSymbol, quoteSymbol, usdLike, statement, basis };

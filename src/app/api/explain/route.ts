@@ -30,13 +30,21 @@ export async function POST(req: NextRequest) {
 
     const explanation = await explainOracle(address, chainId);
 
-    // Generate prose only if verified
-    if (explanation.verified) {
+    // Every tier except the opaque one gets prose. What changes between tiers
+    // is the prompt: a verified path gets the pricing memo, everything else
+    // gets the descriptive prompt, which is forbidden from claiming a
+    // mechanism it could not check.
+    if (explanation.tier !== "opaque") {
       try {
         explanation.prose = await generateProse(explanation);
       } catch (err) {
-        // Prose generation failure is non-fatal — the structured data is still valuable
-        console.error("Prose generation failed:", err);
+        // Prose generation failure is non-fatal — the deterministic
+        // explanation is already on the page without it. But record why:
+        // a silently blank section is indistinguishable from one that was
+        // never attempted, which made this undiagnosable in production.
+        const reason = err instanceof Error ? err.message : String(err);
+        explanation.proseError = reason;
+        console.error("Prose generation failed:", reason);
       }
     }
 

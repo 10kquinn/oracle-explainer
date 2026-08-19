@@ -70,7 +70,7 @@ describe("buildHumanPrice", () => {
       quoteSymbol: null,
       basis: "test",
     });
-    expect(h.statement).toBe("1 XYZ = 1 loan tokens");
+    expect(h.statement).toBe("1 XYZ = 1 units of the loan token (unidentified)");
   });
 });
 

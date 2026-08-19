@@ -344,14 +344,84 @@ describe("Morpho adapter — feed-driven fixture", () => {
     expect(steps).toHaveLength(4);
     expect(steps[0]).toContain("wstETH / ETH");
     expect(steps[0]).toContain("1.2");
-    expect(steps[0]).toContain("Start with the wstETH / ETH feed");
+    expect(steps[0]).toContain("Start with wstETH / ETH");
     expect(steps[0]).toContain("price of one wstETH in ETH");
     expect(steps[1]).toContain("ETH / USD");
     expect(steps[1]).toContain("3000");
-    expect(steps[2]).toContain("Divide by the USDC / USD feed");
+    expect(steps[2]).toContain("Divide by USDC / USD");
     expect(steps[3]).toContain("SCALE_FACTOR");
 
     // The loan asset has a live feed here, so the parity note must not appear.
     expect(notes.join(" ")).not.toContain("No external price feed is read");
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/*  Anonymous-feed fixture                                             */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Taken from a real mainnet oracle (0xee70EC00…) whose base feed implements
+ * decimals() but neither description() nor symbol(). Nothing can be named, and
+ * the explanation has to say so rather than leak slot names into prose or
+ * guess a ticker.
+ */
+const ANON_CONFIG: RawConfig = {
+  BASE_VAULT: zeroAddress,
+  BASE_VAULT_CONVERSION_SAMPLE: 1n,
+  BASE_FEED_1: "0x7205924400000000000000000000000000000000",
+  BASE_FEED_2: zeroAddress,
+  QUOTE_FEED_1: zeroAddress,
+  QUOTE_FEED_2: zeroAddress,
+  QUOTE_VAULT: zeroAddress,
+  QUOTE_VAULT_CONVERSION_SAMPLE: 1n,
+  SCALE_FACTOR: 10000000000000000000000000000n, // 1e28
+};
+
+const ANON_RESOLVED: ResolvedDependencies = {
+  BASE_VAULT: zeroResolved(),
+  BASE_FEED_2: zeroResolved(),
+  QUOTE_VAULT: zeroResolved(),
+  QUOTE_FEED_1: zeroResolved(),
+  QUOTE_FEED_2: zeroResolved(),
+  BASE_FEED_1: {
+    ...zeroResolved(),
+    address: "0x7205924400000000000000000000000000000000",
+    label: null,
+    decimals: 8,
+  },
+};
+
+const ANON_LIVE: MorphoLiveValues = {
+  baseVaultAssets: 1n,
+  baseFeed1Price: 100000000n,
+  baseFeed2Price: 1n,
+  quoteVaultAssets: 1n,
+  quoteFeed1Price: 1n,
+  quoteFeed2Price: 1n,
+};
+
+describe("Morpho adapter — unnameable dependencies", () => {
+  it("identifies an anonymous feed by address, never by slot name", () => {
+    const result = morphoAdapter(ANON_CONFIG, ANON_RESOLVED, ANON_LIVE);
+    const { summary, steps } = result.formulaExplanation;
+
+    expect(steps[0]).toContain("0x7205…0000");
+    expect(steps[0]).toContain("publishes no description()");
+    // The slot name is an internal variable and must not reach the prose.
+    expect(steps[0]).not.toContain("BASE_FEED_1");
+    expect(summary).not.toContain("BASE_FEED_1");
+  });
+
+  it("counts in the singular and admits the tokens are unidentified", () => {
+    const result = morphoAdapter(ANON_CONFIG, ANON_RESOLVED, ANON_LIVE);
+
+    expect(result.formulaExplanation.summary).toContain(
+      "one unit of the collateral token",
+    );
+    expect(result.formulaExplanation.summary).toContain("could be named");
+    // "1 loan tokens" was the old output — plural noun after the numeral 1.
+    expect(result.humanPrice!.statement).not.toMatch(/= \S+ loan tokens$/);
+    expect(result.humanPrice!.statement).toContain("(unidentified)");
   });
 });

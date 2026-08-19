@@ -50,6 +50,26 @@ export interface FormulaExplanation {
   notes: string[];
 }
 
+/**
+ * How much the tool was able to establish about an address. Every tier gets a
+ * plain-English explanation; the tier decides what that explanation is allowed
+ * to claim.
+ *
+ * - `verified-path`  an adapter recomputed the entrypoint and it matched exactly.
+ *                    A pricing narrative is permitted.
+ * - `path-mismatch`  an adapter ran but its recomputation disagreed with the
+ *                    live call. The parse is wrong somewhere; no narrative.
+ * - `described`      the contract is verified and its config was read, but no
+ *                    adapter can compute its entrypoint. Describe what is
+ *                    there; claim nothing about how it prices.
+ * - `opaque`         source is unavailable. Report provenance only.
+ */
+export type ExplanationTier =
+  | "verified-path"
+  | "path-mismatch"
+  | "described"
+  | "opaque";
+
 export interface PricingComponent {
   name: string;
   role: "numerator" | "denominator";
@@ -67,13 +87,29 @@ export interface OracleExplanation {
   contractName: string;
   config: RawConfig;
   resolved: ResolvedDependencies;
-  pricingPath: PricingPath;
-  livePrice: bigint;
+  /** Null when no adapter could compute a pricing path for this family. */
+  pricingPath: PricingPath | null;
+  /** Null when the family has no zero-arg price entrypoint to call. */
+  livePrice: bigint | null;
   verified: boolean;
+  tier: ExplanationTier;
+  /**
+   * Always present. For a verified path this is the adapter's formula
+   * walkthrough; otherwise it is a description of what could be established,
+   * which never asserts a pricing mechanism.
+   */
+  explanation: FormulaExplanation;
+  /** Why there is no verified pricing path, when there isn't one. */
+  limitation: string | null;
   /** Creator info */
   creator: { address: string; txHash: string } | null;
-  /** LLM-generated prose (null if unverified) */
+  /** LLM-generated prose. Null when generation was skipped or failed. */
   prose: string | null;
+  /**
+   * Why prose is missing, when it is. Swallowing this made a blank section
+   * indistinguishable from a section that was never attempted.
+   */
+  proseError: string | null;
   /** Recursive explanations of underlying oracles (for wrapper types like MetaOracle) */
   underlyingOracles?: Record<string, OracleExplanation>;
 }

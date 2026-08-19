@@ -22,6 +22,8 @@ import {
   buildHumanPrice,
   scaleDown,
   shortNumber,
+  shortAddress,
+  parseFeedPair,
   type HumanPrice,
 } from "../lib/format";
 
@@ -190,23 +192,6 @@ export function morphoAdapter(
 /*  Symbol inference                                                   */
 /* ------------------------------------------------------------------ */
 
-/**
- * Split a Chainlink-style feed description ("wstETH / ETH") into its two legs.
- * The left leg is the asset being priced, the right leg is the unit it is
- * priced in.
- */
-function feedPair(desc: string | null | undefined): {
-  base: string | null;
-  quote: string | null;
-} {
-  if (!desc) return { base: null, quote: null };
-  const parts = desc.split("/").map((x) => x.trim());
-  if (parts.length === 2 && parts[0] && parts[1]) {
-    return { base: parts[0], quote: parts[1] };
-  }
-  return { base: null, quote: null };
-}
-
 /** The collateral token — what one unit of the price is a unit of. */
 function inferBaseSymbol(
   config: RawConfig,
@@ -217,7 +202,7 @@ function inferBaseSymbol(
     if (v?.symbol) return v.symbol;
   }
   if (!isZero(config.BASE_FEED_1)) {
-    const pair = feedPair(resolved.BASE_FEED_1?.description);
+    const pair = parseFeedPair(resolved.BASE_FEED_1?.description);
     if (pair.base) return pair.base;
   }
   return null;
@@ -240,15 +225,15 @@ function inferQuoteSymbol(
     if (v?.symbol) return v.symbol;
   }
   if (!isZero(config.QUOTE_FEED_1)) {
-    const pair = feedPair(resolved.QUOTE_FEED_1?.description);
+    const pair = parseFeedPair(resolved.QUOTE_FEED_1?.description);
     if (pair.base) return pair.base;
   }
   if (!isZero(config.BASE_FEED_2)) {
-    const pair = feedPair(resolved.BASE_FEED_2?.description);
+    const pair = parseFeedPair(resolved.BASE_FEED_2?.description);
     if (pair.quote) return pair.quote;
   }
   if (!isZero(config.BASE_FEED_1)) {
-    const pair = feedPair(resolved.BASE_FEED_1?.description);
+    const pair = parseFeedPair(resolved.BASE_FEED_1?.description);
     if (pair.quote) return pair.quote;
   }
   if (!isZero(config.BASE_VAULT)) {
@@ -295,6 +280,22 @@ function feedValueInWords(value: bigint, decimals: number | null): string {
   return scaleDown(value, decimals);
 }
 
+/**
+ * Name a dependency for prose. A slot name like BASE_FEED_1 is a variable, not
+ * a name — if the contract publishes no description() or symbol(), say so and
+ * give the address, which is at least something the reader can go look up.
+ */
+function describeTarget(
+  addr: unknown,
+  resolved: ResolvedDependencies[string] | undefined,
+): { name: string; anonymous: boolean } {
+  if (resolved?.label) return { name: resolved.label, anonymous: false };
+  if (typeof addr === "string" && addr.startsWith("0x")) {
+    return { name: `the contract at ${shortAddress(addr)}`, anonymous: true };
+  }
+  return { name: "an unnamed contract", anonymous: true };
+}
+
 function explainFormula(ctx: {
   config: RawConfig;
   resolved: ResolvedDependencies;
@@ -316,19 +317,25 @@ function explainFormula(ctx: {
 }): FormulaExplanation {
   const { config, resolved, values, baseSymbol, quoteSymbol, humanPrice } = ctx;
 
-  const base = baseSymbol ?? "the collateral token";
   const quote = quoteSymbol ?? "the loan token";
+  // "1 the collateral token" — keep the article out of the count.
+  const oneBase = baseSymbol ? `1 ${baseSymbol}` : "one unit of the collateral token";
+  const inQuote = quoteSymbol ? quoteSymbol : "the loan token";
 
   const summary =
-    `This oracle answers one question: what is 1 ${base} worth, measured in ${quote}? ` +
-    `Every term below either contributes to that answer or is switched off.`;
+    `This oracle answers one question: what is ${oneBase} worth, measured in ${inQuote}? ` +
+    `Every term below either contributes to that answer or is switched off.` +
+    (baseSymbol && quoteSymbol
+      ? ""
+      : ` Neither side could be named from the oracle alone — the contracts it reads publish no ` +
+        `symbol or description — so the tokens are identified by role rather than by ticker.`);
 
   const steps: string[] = [];
 
   // --- numerator: value of the collateral ---
   if (!isZero(config.BASE_VAULT)) {
     const v = resolved.BASE_VAULT;
-    const label = v?.label ?? "the base vault";
+    const label = describeTarget(config.BASE_VAULT, v).name;
     const underlying = v?.assetSymbol ?? "its underlying asset";
     const sample = ctx.baseVaultConversionSample;
     steps.push(
@@ -346,28 +353,34 @@ function explainFormula(ctx: {
   ] as const) {
     if (isZero(config[slot])) continue;
     const r = resolved[slot];
-    const pair = feedPair(r?.description);
-    const label = r?.label ?? slot;
+    const pair = parseFeedPair(r?.description);
+    const { name, anonymous } = describeTarget(config[slot], r);
     const shown = feedValueInWords(price, r?.decimals ?? null);
     const raw =
       r?.decimals != null
         ? ` (raw ${price.toString()}, ${r.decimals} decimals)`
         : "";
+    const nameless = anonymous
+      ? ` This feed publishes no description(), so there is no on-chain label for what it prices — ` +
+        `the pair has to be established from the market it is used in.`
+      : "";
     // The first step has no running value to multiply into yet.
     if (steps.length === 0) {
       steps.push(
-        `Start with the ${label} feed, currently reporting ${shown}${raw}. ` +
+        `Start with ${name}, a price feed currently reporting ${shown}${raw}. ` +
           (pair.base && pair.quote
             ? `That is the price of one ${pair.base} in ${pair.quote}, and it is where the ` +
               `collateral's value enters the calculation.`
-            : `That is where the collateral's value enters the calculation.`),
+            : `That is where the collateral's value enters the calculation.`) +
+          nameless,
       );
     } else {
       steps.push(
-        `Multiply by the ${label} feed, currently reporting ${shown}${raw}. ` +
+        `Multiply by ${name}, currently reporting ${shown}${raw}. ` +
           (pair.base && pair.quote
             ? `This converts the running value from ${pair.base} into ${pair.quote}.`
-            : `This converts the running value into the feed's quote unit.`),
+            : `This converts the running value into that feed's quote unit.`) +
+          nameless,
       );
     }
   }
@@ -375,7 +388,7 @@ function explainFormula(ctx: {
   // --- denominator: value of the loan asset ---
   if (!isZero(config.QUOTE_VAULT)) {
     const v = resolved.QUOTE_VAULT;
-    const label = v?.label ?? "the quote vault";
+    const label = describeTarget(config.QUOTE_VAULT, v).name;
     const sample = ctx.quoteVaultConversionSample;
     steps.push(
       `Divide by ${label}'s exchange rate — convertToAssets(${shortNumber(sample)}) = ` +
@@ -390,11 +403,11 @@ function explainFormula(ctx: {
   ] as const) {
     if (isZero(config[slot])) continue;
     const r = resolved[slot];
-    const pair = feedPair(r?.description);
-    const label = r?.label ?? slot;
+    const pair = parseFeedPair(r?.description);
+    const { name } = describeTarget(config[slot], r);
     const shown = feedValueInWords(price, r?.decimals ?? null);
     steps.push(
-      `Divide by the ${label} feed, currently reporting ${shown}` +
+      `Divide by ${name}, currently reporting ${shown}` +
         (r?.decimals != null ? ` (raw ${price.toString()}, ${r.decimals} decimals)` : "") +
         `. ` +
         (pair.base

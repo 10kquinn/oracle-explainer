@@ -56,9 +56,13 @@ interface ExplanationResult {
     }[];
     caveats: string[];
     derived: Record<string, unknown>;
-  };
-  livePrice: string;
+  } | null;
+  livePrice: string | null;
   verified: boolean;
+  tier: "verified-path" | "path-mismatch" | "described" | "opaque";
+  explanation: FormulaExplanation;
+  limitation: string | null;
+  proseError?: string | null;
   creator: { address: string; txHash: string } | null;
   prose: string | null;
   underlyingOracles?: Record<string, ExplanationResult>;
@@ -370,51 +374,78 @@ function ErrorView({ message }: { message: string }) {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Tier presentation                                                  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * What the badge claims is exactly what was established — no more. Only a
+ * recomputed-and-matched pricing path earns "VERIFIED"; everything else says
+ * plainly what it is instead of borrowing the same green.
+ */
+const TIER_STYLE: Record<
+  ExplanationResult["tier"],
+  { label: string; color: string; dim: string; border: string; blurb: string }
+> = {
+  "verified-path": {
+    label: "VERIFIED",
+    color: "var(--verified)",
+    dim: "var(--verified-dim)",
+    border: "rgba(52, 211, 153, 0.15)",
+    blurb: "The pricing path was recomputed from config and matches the live call exactly.",
+  },
+  "path-mismatch": {
+    label: "MISMATCH",
+    color: "var(--danger)",
+    dim: "var(--danger-dim)",
+    border: "rgba(248, 113, 113, 0.15)",
+    blurb: "The recomputed value disagrees with the live call, so the parse is wrong somewhere.",
+  },
+  described: {
+    label: "DESCRIBED",
+    color: "var(--accent)",
+    dim: "var(--accent-dim)",
+    border: "rgba(91, 141, 239, 0.2)",
+    blurb: "Read off-chain but not verified — no pricing mechanism is claimed below.",
+  },
+  opaque: {
+    label: "NO SOURCE",
+    color: "var(--text-tertiary)",
+    dim: "var(--surface-raised)",
+    border: "var(--border)",
+    blurb: "Source code is not published, so there is nothing to explain.",
+  },
+};
+
+/* ------------------------------------------------------------------ */
 /*  Result view                                                        */
 /* ------------------------------------------------------------------ */
 
 function ResultView({ result }: { result: ExplanationResult }) {
   const chain = CHAINS.find((c) => c.id === result.chainId);
+  const tier = TIER_STYLE[result.tier] ?? TIER_STYLE.described;
+  const path = result.pricingPath;
 
   return (
     <div className="mt-6 space-y-0">
-      {/* ---- Verification + contract header ---- */}
+      {/* ---- Tier + contract header ---- */}
       <div
         className="rounded-t-lg border border-b-0 p-5"
-        style={{
-          background: result.verified
-            ? "var(--verified-dim)"
-            : "var(--danger-dim)",
-          borderColor: result.verified
-            ? "rgba(52, 211, 153, 0.15)"
-            : "rgba(248, 113, 113, 0.15)",
-        }}
+        style={{ background: tier.dim, borderColor: tier.border }}
       >
         <div className="flex items-start justify-between gap-4">
           <div>
-            <div className="flex items-center gap-2.5 mb-2">
+            <div className="flex items-center gap-2.5 mb-2 flex-wrap">
               <span
                 className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-xs font-mono font-medium ${
                   result.verified ? "verified-badge" : ""
                 }`}
-                style={{
-                  background: result.verified
-                    ? "rgba(52, 211, 153, 0.15)"
-                    : "rgba(248, 113, 113, 0.15)",
-                  color: result.verified
-                    ? "var(--verified)"
-                    : "var(--danger)",
-                }}
+                style={{ background: tier.dim, color: tier.color }}
               >
                 <span
                   className="w-1.5 h-1.5 rounded-full"
-                  style={{
-                    background: result.verified
-                      ? "var(--verified)"
-                      : "var(--danger)",
-                  }}
+                  style={{ background: tier.color }}
                 />
-                {result.verified ? "VERIFIED" : "UNVERIFIED"}
+                {tier.label}
               </span>
               <span
                 className="text-xs font-mono"
@@ -432,6 +463,12 @@ function ResultView({ result }: { result: ExplanationResult }) {
             >
               {result.address}
             </a>
+            <p
+              className="text-xs mt-2 max-w-lg leading-relaxed"
+              style={{ color: "var(--text-tertiary)" }}
+            >
+              {tier.blurb}
+            </p>
           </div>
           <span
             className="text-xs font-mono px-2 py-0.5 rounded shrink-0"
@@ -453,9 +490,21 @@ function ResultView({ result }: { result: ExplanationResult }) {
           borderColor: "var(--border)",
         }}
       >
-        {/* Prose explanation — the most important output, shown first */}
-        {result.prose && result.verified && (
-          <Section title="Explanation" first>
+        {/* What blocked verification, when something did */}
+        {result.limitation && (
+          <Section title="Limitation" first>
+            <p
+              className="text-sm leading-relaxed"
+              style={{ color: "var(--text-secondary)" }}
+            >
+              {result.limitation}
+            </p>
+          </Section>
+        )}
+
+        {/* Prose */}
+        {result.prose && (
+          <Section title="Explanation" first={!result.limitation}>
             <div
               className="text-sm leading-[1.7] whitespace-pre-wrap"
               style={{ color: "var(--text)" }}
@@ -465,118 +514,137 @@ function ResultView({ result }: { result: ExplanationResult }) {
           </Section>
         )}
 
-        {/* Unverified warning instead of prose */}
-        {!result.verified && (
-          <Section title="Verification failed" first>
+        {/* Prose was attempted and failed — say so rather than showing a gap.
+            Everything below is deterministic and unaffected. */}
+        {!result.prose && result.proseError && (
+          <Section title="Explanation unavailable" first={!result.limitation}>
             <p
-              className="text-sm leading-relaxed"
+              className="text-sm leading-relaxed mb-2"
               style={{ color: "var(--text-secondary)" }}
             >
-              The recomputed price does not match the live on-chain call.
-              The configuration and resolved dependencies are shown below for
-              manual inspection, but no narrative explanation is provided for
-              unverified pricing paths.
+              The written explanation could not be generated. Everything below
+              is computed deterministically and is unaffected.
+            </p>
+            <p
+              className="text-xs font-mono break-all"
+              style={{ color: "var(--text-tertiary)" }}
+            >
+              {result.proseError}
             </p>
           </Section>
         )}
 
-        {/* Formula */}
-        <Section title="Pricing formula">
-          <pre
-            className="font-mono text-sm overflow-x-auto"
-            style={{ color: "var(--accent)" }}
+        {/* Formula — only exists when an adapter ran */}
+        {path && (
+          <Section
+            title="Pricing formula"
+            first={!result.limitation && !result.prose}
           >
-            {result.pricingPath.formula}
-          </pre>
-          <FormulaInPlainEnglish
-            explanation={result.pricingPath.formulaExplanation}
-          />
+            <pre
+              className="font-mono text-sm overflow-x-auto"
+              style={{ color: "var(--accent)" }}
+            >
+              {path.formula}
+            </pre>
+          </Section>
+        )}
+
+        {/* Plain English — always present, whatever the tier */}
+        <Section
+          title="In plain English"
+          first={!result.limitation && !result.prose && !path}
+        >
+          <FormulaInPlainEnglish explanation={result.explanation} bare />
         </Section>
 
         {/* Verification numbers */}
-        <Section title="Verification">
-          <div className="flex items-start justify-between gap-4 flex-wrap">
-            <PriceHeadline
-              human={result.pricingPath.humanPrice}
-              rawPrice={result.livePrice}
-            />
-            <span
-              className="text-xs font-medium px-2 py-0.5 rounded shrink-0"
-              style={{
-                background: result.verified
-                  ? "var(--verified-dim)"
-                  : "var(--danger-dim)",
-                color: result.verified
-                  ? "var(--verified)"
-                  : "var(--danger)",
-              }}
-            >
-              {result.verified ? "Exact match" : "MISMATCH"}
-            </span>
-          </div>
-
-          <div
-            className="mt-4 pt-4 border-t space-y-1.5"
-            style={{ borderColor: "var(--border)" }}
-          >
-            <div className="flex flex-col sm:flex-row sm:gap-8 gap-1.5 font-mono text-xs">
-              <div className="break-all">
-                <span style={{ color: "var(--text-tertiary)" }}>Recomputed </span>
-                <span style={{ color: "var(--text-secondary)" }}>
-                  {result.pricingPath.recomputedPrice}
-                </span>
-              </div>
-              <div className="break-all">
-                <span style={{ color: "var(--text-tertiary)" }}>Live call </span>
-                <span style={{ color: "var(--text-secondary)" }}>
-                  {result.livePrice}
-                </span>
-              </div>
-            </div>
-            {result.pricingPath.humanPrice && (
-              <p
-                className="text-xs leading-relaxed"
-                style={{ color: "var(--text-tertiary)" }}
+        {path && result.livePrice !== null && (
+          <Section title="Verification">
+            <div className="flex items-start justify-between gap-4 flex-wrap">
+              <PriceHeadline
+                human={path.humanPrice}
+                rawPrice={result.livePrice}
+              />
+              <span
+                className="text-xs font-medium px-2 py-0.5 rounded shrink-0"
+                style={{
+                  background: result.verified
+                    ? "var(--verified-dim)"
+                    : "var(--danger-dim)",
+                  color: result.verified
+                    ? "var(--verified)"
+                    : "var(--danger)",
+                }}
               >
-                {result.pricingPath.humanPrice.basis}
-              </p>
-            )}
-          </div>
-        </Section>
+                {result.verified ? "Exact match" : "MISMATCH"}
+              </span>
+            </div>
+
+            <div
+              className="mt-4 pt-4 border-t space-y-1.5"
+              style={{ borderColor: "var(--border)" }}
+            >
+              <div className="flex flex-col sm:flex-row sm:gap-8 gap-1.5 font-mono text-xs">
+                <div className="break-all">
+                  <span style={{ color: "var(--text-tertiary)" }}>
+                    Recomputed{" "}
+                  </span>
+                  <span style={{ color: "var(--text-secondary)" }}>
+                    {path.recomputedPrice}
+                  </span>
+                </div>
+                <div className="break-all">
+                  <span style={{ color: "var(--text-tertiary)" }}>
+                    Live call{" "}
+                  </span>
+                  <span style={{ color: "var(--text-secondary)" }}>
+                    {result.livePrice}
+                  </span>
+                </div>
+              </div>
+              {path.humanPrice && (
+                <p
+                  className="text-xs leading-relaxed"
+                  style={{ color: "var(--text-tertiary)" }}
+                >
+                  {path.humanPrice.basis}
+                </p>
+              )}
+            </div>
+          </Section>
+        )}
 
         {/* Components */}
-        <Section title="Components">
-          <div className="space-y-2">
-            {result.pricingPath.components.map((c) => (
-              <div
-                key={c.name}
-                className="flex items-start gap-2.5 font-mono text-xs"
-              >
-                <span
-                  className="px-1.5 py-0.5 rounded text-[10px] font-medium shrink-0 mt-px uppercase"
-                  style={{
-                    background:
-                      c.role === "numerator"
-                        ? "var(--num-dim)"
-                        : "var(--den-dim)",
-                    color:
-                      c.role === "numerator"
-                        ? "var(--num)"
-                        : "var(--den)",
-                  }}
+        {path && path.components.length > 0 && (
+          <Section title="Components">
+            <div className="space-y-2">
+              {path.components.map((c) => (
+                <div
+                  key={c.name}
+                  className="flex items-start gap-2.5 font-mono text-xs"
                 >
-                  {c.role === "numerator" ? "num" : "den"}
-                </span>
-                <span style={{ color: "var(--text-tertiary)" }}>
-                  {c.name}
-                </span>
-                <span style={{ color: "var(--text-secondary)" }}>
-                  {c.source}
-                </span>
-              </div>
-            ))}
-          </div>
-        </Section>
+                  <span
+                    className="px-1.5 py-0.5 rounded text-[10px] font-medium shrink-0 mt-px uppercase"
+                    style={{
+                      background:
+                        c.role === "numerator"
+                          ? "var(--num-dim)"
+                          : "var(--den-dim)",
+                      color:
+                        c.role === "numerator" ? "var(--num)" : "var(--den)",
+                    }}
+                  >
+                    {c.role === "numerator" ? "num" : "den"}
+                  </span>
+                  <span style={{ color: "var(--text-tertiary)" }}>{c.name}</span>
+                  <span style={{ color: "var(--text-secondary)" }}>
+                    {c.source}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </Section>
+        )}
 
         {/* Underlying oracles (for wrapper types like MetaOracle) */}
         {result.underlyingOracles &&
@@ -591,9 +659,9 @@ function ResultView({ result }: { result: ExplanationResult }) {
                       oracle={oracle}
                       isActive={
                         (role === "primary" &&
-                          result.pricingPath.derived.activeOracle === "primary") ||
+                          path?.derived.activeOracle === "primary") ||
                         (role === "backup" &&
-                          result.pricingPath.derived.activeOracle === "backup")
+                          path?.derived.activeOracle === "backup")
                       }
                     />
                   ),
@@ -603,76 +671,88 @@ function ResultView({ result }: { result: ExplanationResult }) {
           )}
 
         {/* Configuration */}
-        <Section title="Configuration">
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs font-mono">
-              <tbody>
-                {Object.entries(result.config).map(([key, value]) => {
-                  const resolved = result.resolved[key];
-                  const isAddress =
-                    typeof value === "string" && value.startsWith("0x") && value.length === 42;
-                  return (
-                    <tr
-                      key={key}
-                      className="border-b"
-                      style={{ borderColor: "var(--border)" }}
-                    >
-                      <td
-                        className="py-2 pr-4 whitespace-nowrap align-top"
-                        style={{ color: "var(--text-tertiary)" }}
+        {Object.keys(result.config).length > 0 && (
+          <Section title="Configuration">
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs font-mono">
+                <tbody>
+                  {Object.entries(result.config).map(([key, value]) => {
+                    const resolved = result.resolved[key];
+                    const isAddress =
+                      typeof value === "string" &&
+                      value.startsWith("0x") &&
+                      value.length === 42;
+                    return (
+                      <tr
+                        key={key}
+                        className="border-b"
+                        style={{ borderColor: "var(--border)" }}
                       >
-                        {key}
-                      </td>
-                      <td className="py-2" style={{ color: "var(--text-secondary)" }}>
-                        {isAddress ? (
-                          <span className="flex items-center gap-2 flex-wrap">
-                            <a
-                              href={addressLink(result.chainId, String(value))}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="hover:underline"
-                              style={{ color: "var(--text-secondary)" }}
-                            >
-                              {truncateAddress(String(value))}
-                            </a>
-                            {resolved?.label && (
-                              <span style={{ color: "var(--text)" }}>
-                                {resolved.label}
-                              </span>
-                            )}
-                          </span>
-                        ) : (
-                          String(value)
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </Section>
+                        <td
+                          className="py-2 pr-4 whitespace-nowrap align-top"
+                          style={{ color: "var(--text-tertiary)" }}
+                        >
+                          {key}
+                        </td>
+                        <td
+                          className="py-2"
+                          style={{ color: "var(--text-secondary)" }}
+                        >
+                          {isAddress ? (
+                            <span className="flex items-center gap-2 flex-wrap">
+                              <a
+                                href={addressLink(
+                                  result.chainId,
+                                  String(value),
+                                )}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="hover:underline"
+                                style={{ color: "var(--text-secondary)" }}
+                              >
+                                {truncateAddress(String(value))}
+                              </a>
+                              {resolved?.label && (
+                                <span style={{ color: "var(--text)" }}>
+                                  {resolved.label}
+                                </span>
+                              )}
+                            </span>
+                          ) : (
+                            String(value)
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </Section>
+        )}
 
         {/* Caveats */}
-        <Section title="Standing caveats">
-          <ul className="space-y-2">
-            {result.pricingPath.caveats.map((c, i) => (
-              <li
-                key={i}
-                className="text-xs leading-relaxed flex gap-2"
-                style={{ color: "var(--text-secondary)" }}
-              >
-                <span
-                  className="shrink-0 mt-0.5"
-                  style={{ color: "var(--text-tertiary)" }}
+        {path && path.caveats.length > 0 && (
+          <Section title="Standing caveats">
+            <ul className="space-y-2">
+              {path.caveats.map((c, i) => (
+                <li
+                  key={i}
+                  className="text-xs leading-relaxed flex gap-2"
+                  style={{ color: "var(--text-secondary)" }}
                 >
-                  &bull;
-                </span>
-                <span>{c}</span>
-              </li>
-            ))}
-          </ul>
-        </Section>
+                  <span
+                    className="shrink-0 mt-0.5"
+                    style={{ color: "var(--text-tertiary)" }}
+                  >
+                    &bull;
+                  </span>
+                  <span>{c}</span>
+                </li>
+              ))}
+            </ul>
+          </Section>
+        )}
 
         {/* Creator */}
         {result.creator && (
@@ -712,6 +792,7 @@ function ResultView({ result }: { result: ExplanationResult }) {
     </div>
   );
 }
+
 
 /* ------------------------------------------------------------------ */
 /*  Underlying oracle card (for MetaOracle's primary/backup)           */
@@ -798,9 +879,9 @@ function UnderlyingOracleCard({
           className="font-mono text-xs overflow-x-auto"
           style={{ color: "var(--accent)" }}
         >
-          {oracle.pricingPath.formula}
+          {oracle.pricingPath?.formula ?? "no pricing path computed"}
         </pre>
-        {oracle.pricingPath.humanPrice && (
+        {oracle.pricingPath?.humanPrice && (
           <div
             className="text-xs font-mono mt-2"
             style={{ color: "var(--text-secondary)" }}
@@ -808,10 +889,7 @@ function UnderlyingOracleCard({
             {oracle.pricingPath.humanPrice.statement}
           </div>
         )}
-        <FormulaInPlainEnglish
-          explanation={oracle.pricingPath.formulaExplanation}
-          compact
-        />
+        <FormulaInPlainEnglish explanation={oracle.explanation} compact />
       </div>
 
       {/* Components */}
@@ -823,7 +901,7 @@ function UnderlyingOracleCard({
           Components
         </div>
         <div className="space-y-1.5">
-          {oracle.pricingPath.components.map((c) => (
+          {(oracle.pricingPath?.components ?? []).map((c) => (
             <div
               key={c.name}
               className="flex items-start gap-2 font-mono text-[11px]"
@@ -988,24 +1066,29 @@ function PriceHeadline({
 function FormulaInPlainEnglish({
   explanation,
   compact,
+  bare,
 }: {
   explanation: FormulaExplanation;
   compact?: boolean;
+  /** Rendered inside a Section that already supplies the heading and rule. */
+  bare?: boolean;
 }) {
   const bodySize = compact ? "text-[11px]" : "text-sm";
   const numSize = compact ? "text-[9px]" : "text-[10px]";
 
   return (
     <div
-      className={`mt-4 pt-4 border-t ${compact ? "" : ""}`}
-      style={{ borderColor: "var(--border)" }}
+      className={bare ? "" : "mt-4 pt-4 border-t"}
+      style={bare ? undefined : { borderColor: "var(--border)" }}
     >
-      <div
-        className={`${numSize} font-mono uppercase tracking-wider mb-2.5`}
-        style={{ color: "var(--text-tertiary)" }}
-      >
-        In plain English
-      </div>
+      {!bare && (
+        <div
+          className={`${numSize} font-mono uppercase tracking-wider mb-2.5`}
+          style={{ color: "var(--text-tertiary)" }}
+        >
+          In plain English
+        </div>
+      )}
 
       <p
         className={`${bodySize} leading-relaxed mb-3`}

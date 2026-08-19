@@ -17,7 +17,15 @@ export async function generateProse(
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error("ANTHROPIC_API_KEY not set");
 
-  const prompt = buildPrompt(explanation);
+  // An opaque contract has nothing to write about.
+  if (explanation.tier === "opaque") {
+    throw new Error("No source available — prose would have nothing to describe");
+  }
+
+  const prompt =
+    explanation.tier === "verified-path"
+      ? buildPrompt(explanation)
+      : buildDescriptivePrompt(explanation);
 
   const response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
@@ -46,6 +54,8 @@ export async function generateProse(
 }
 
 function buildPrompt(e: OracleExplanation): string {
+  const path = e.pricingPath;
+  if (!path) throw new Error("buildPrompt requires a verified pricing path");
   // Serialize config with bigints as strings
   const configStr = JSON.stringify(
     e.config,
@@ -53,13 +63,13 @@ function buildPrompt(e: OracleExplanation): string {
     2,
   );
   const resolvedStr = JSON.stringify(e.resolved, null, 2);
-  const componentsStr = e.pricingPath.components
+  const componentsStr = path.components
     .map(
       (c) =>
         `  ${c.name} (${c.role}): ${c.source}`,
     )
     .join("\n");
-  const derivedStr = JSON.stringify(e.pricingPath.derived, null, 2);
+  const derivedStr = JSON.stringify(path.derived, null, 2);
 
   return `You are writing a plain-English explanation of a DeFi oracle for a risk/due-diligence memo. You are NOT computing the price — that has already been verified deterministically. Your job is to explain the structured facts below in clear, precise English.
 
@@ -70,20 +80,20 @@ function buildPrompt(e: OracleExplanation): string {
 - Family: ${e.family}
 - Creator: ${e.creator ? e.creator.address : "unknown"}
 - Verified: ${e.verified ? "YES — recomputed price matches live call exactly" : "NO — MISMATCH"}
-- Live price (raw): ${e.livePrice.toString()}
+- Live price (raw): ${e.livePrice?.toString() ?? "n/a"}
 - Live price (rescaled, computed deterministically — use this figure verbatim, do not recompute it): ${
-    e.pricingPath.humanPrice
-      ? `${e.pricingPath.humanPrice.statement} (${e.pricingPath.humanPrice.basis})`
+    path.humanPrice
+      ? `${path.humanPrice.statement} (${path.humanPrice.basis})`
       : "not derivable — the scaling exponent could not be recovered, so do not state a decimal price"
   }
 
 ## Formula
-${e.pricingPath.formula}
+${path.formula}
 
 ## Plain-English reading of the formula (already shown to the reader — do not repeat it verbatim)
-${e.pricingPath.formulaExplanation.summary}
-${e.pricingPath.formulaExplanation.steps.map((x, i) => `${i + 1}. ${x}`).join("\n")}
-${e.pricingPath.formulaExplanation.notes.map((x) => `- ${x}`).join("\n")}
+${path.formulaExplanation.summary}
+${path.formulaExplanation.steps.map((x, i) => `${i + 1}. ${x}`).join("\n")}
+${path.formulaExplanation.notes.map((x) => `- ${x}`).join("\n")}
 
 ## Components
 ${componentsStr}
@@ -98,7 +108,7 @@ ${resolvedStr}
 ${configStr}
 
 ## Standing caveats for this oracle family
-${e.pricingPath.caveats.map((c, i) => `${i + 1}. ${c}`).join("\n")}
+${path.caveats.map((c, i) => `${i + 1}. ${c}`).join("\n")}
 ${buildUnderlyingSection(e)}
 ---
 
@@ -130,7 +140,8 @@ function buildUnderlyingSection(e: OracleExplanation): string {
       2,
     );
     const oracleResolvedStr = JSON.stringify(oracle.resolved, null, 2);
-    const oracleComponentsStr = oracle.pricingPath.components
+    const inner = oracle.pricingPath;
+    const oracleComponentsStr = (inner?.components ?? [])
       .map((c) => `  ${c.name} (${c.role}): ${c.source}`)
       .join("\n");
 
@@ -139,12 +150,12 @@ function buildUnderlyingSection(e: OracleExplanation): string {
 Family: ${oracle.family}
 Verified: ${oracle.verified ? "YES" : "NO"}
 
-Formula: ${oracle.pricingPath.formula}
+Formula: ${inner?.formula ?? "not computed"}
 
 Components:
 ${oracleComponentsStr}
 
-Derived: ${JSON.stringify(oracle.pricingPath.derived, null, 2)}
+Derived: ${JSON.stringify(inner?.derived ?? {}, null, 2)}
 
 Resolved dependencies:
 ${oracleResolvedStr}
@@ -153,9 +164,65 @@ Config:
 ${oracleConfigStr}
 
 Caveats:
-${oracle.pricingPath.caveats.map((c, i) => `${i + 1}. ${c}`).join("\n")}
+${(inner?.caveats ?? []).map((c, i) => `${i + 1}. ${c}`).join("\n")}
 `);
   }
 
   return sections.join("\n");
+}
+
+/**
+ * The prompt for every tier that is not a verified pricing path.
+ *
+ * This is a different job from the memo prompt above, and the difference is
+ * the point: there is no verified arithmetic here, so the model is given only
+ * observable facts and is forbidden from describing a pricing mechanism. The
+ * useful output is orientation — what this is, what it touches, what a human
+ * still has to go and check by hand.
+ */
+function buildDescriptivePrompt(e: OracleExplanation): string {
+  const configStr = JSON.stringify(
+    e.config,
+    (_, v) => (typeof v === "bigint" ? v.toString() : v),
+    2,
+  );
+  const resolvedStr = JSON.stringify(e.resolved, null, 2);
+
+  return `You are helping someone doing due diligence on a DeFi oracle. This address could NOT be verified: no adapter was able to recompute its output and match it against the live contract.
+
+## What is known
+- Address: ${e.address}
+- Chain: ${e.chainId === 1 ? "Ethereum mainnet" : `Chain ${e.chainId}`}
+- Contract name: ${e.contractName}
+- ABI fingerprint suggests family: ${e.family}
+- Why it could not be verified: ${e.limitation ?? "unknown"}
+- Deployed by: ${e.creator ? e.creator.address : "unknown"}
+
+## Readable configuration
+${configStr}
+
+## Resolved dependency addresses
+${resolvedStr}
+
+## Deterministic description already shown to the reader
+${e.explanation.summary}
+${e.explanation.steps.map((x, i) => `${i + 1}. ${x}`).join("\n")}
+${e.explanation.notes.map((x) => `- ${x}`).join("\n")}
+
+---
+
+Write exactly three short paragraphs with these headings:
+
+**What this contract is** — Identify it from its name, its ABI shape and its dependencies. If the name or the resolved dependencies strongly suggest a specific protocol or a specific asset pair, say so and say what the evidence is. Distinguish clearly between what the chain told us and what you are inferring.
+
+**What it depends on** — Walk the resolved dependency addresses and say what each one appears to be. This is the most useful section: a raw address carries no information, and naming what sits behind each one is the work.
+
+**What still has to be checked by hand** — Be specific and actionable about what a reviewer needs to do to close the gap: which function to read, which source file to open, which owner address to look up. Name the actual limitation that blocked verification.
+
+CRITICAL CONSTRAINTS — these override any instinct to be helpful:
+- Do NOT explain how this contract computes its price. That was not verified and any account you give of it would be a guess. If you find yourself writing "it multiplies", "it divides", "it reads the price from", stop.
+- Do NOT state a price figure or do any arithmetic.
+- Do NOT reassure the reader that the oracle is safe, sound, standard, or fine. You have no basis for that.
+- Where you are inferring rather than reading, mark it plainly ("the name suggests", "this looks like").
+- If the honest answer to a section is that very little could be established, say that briefly rather than padding it.`;
 }
