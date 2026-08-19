@@ -28,6 +28,17 @@ import type { OracleExplanation } from "./types";
 const MODEL = "claude-opus-5";
 const MAX_TOKENS = 16000;
 
+/**
+ * Oracle due-diligence reads as security-adjacent — the descriptive prompt for
+ * an unrecognised contract asks what could not be established and what a
+ * reviewer should check by hand, and a real address (GemUsdcOracle) tripped the
+ * cyber classifier on exactly that. Server-side fallbacks re-run a declined
+ * request on another model in the same call; cyber-category refusals route to
+ * Opus 4.8. "default" lets Anthropic pick per category rather than pinning a
+ * model that will need migrating later.
+ */
+const FALLBACK_BETA = "server-side-fallback-2026-07-01";
+
 export async function generateProse(
   explanation: OracleExplanation,
 ): Promise<string> {
@@ -47,21 +58,27 @@ export async function generateProse(
   const client = new Anthropic({ apiKey });
 
   try {
-    const response = await client.messages.create({
+    const response = await client.beta.messages.create({
       model: MODEL,
       max_tokens: MAX_TOKENS,
       output_config: { effort: "medium" },
+      betas: [FALLBACK_BETA],
+      // SDK typings lag this parameter; the wire shape is a bare string.
+      ...({ fallbacks: "default" } as Record<string, unknown>),
       messages: [{ role: "user", content: prompt }],
     });
 
+    // A refusal here means the whole chain declined, fallback included.
     if (response.stop_reason === "refusal") {
       throw new Error(
-        `Model declined to answer (${response.stop_details?.category ?? "no category"})`,
+        `Model declined to answer (${response.stop_details?.category ?? "no category"}). ` +
+          `This is a false positive on security-adjacent language, not a judgement ` +
+          `about the contract — the structured analysis below is unaffected.`,
       );
     }
 
     const text = response.content
-      .filter((b): b is Anthropic.TextBlock => b.type === "text")
+      .filter((b): b is Anthropic.Beta.BetaTextBlock => b.type === "text")
       .map((b) => b.text)
       .join("\n");
 

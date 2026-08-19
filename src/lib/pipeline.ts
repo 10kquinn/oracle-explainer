@@ -24,6 +24,7 @@ import {
   chainlinkAdapter,
   readChainlinkLiveValues,
   chainlinkEntrypointValue,
+  chainlinkCrossCheckAvailable,
 } from "../adapters/chainlink";
 import { describeUnverified, describeOpaque } from "./describe";
 import { buildHumanPrice } from "./format";
@@ -189,6 +190,32 @@ export async function explainOracle(
       }
     } else if (family === "chainlink") {
       const liveValues = await readChainlinkLiveValues(client, addr, config);
+
+      // No independent read means there is nothing to verify against. Report
+      // that honestly instead of comparing the answer to itself (a fake pass)
+      // or to a sentinel (a fake mismatch that blames the parser).
+      if (!chainlinkCrossCheckAvailable(liveValues)) {
+        return {
+          ...base,
+          pricingPath: null,
+          livePrice: null,
+          verified: false,
+          tier: "described",
+          explanation: describeUnverified({
+            address: addr,
+            contractName: contractInfo.name,
+            family,
+            config,
+            resolved,
+          }),
+          limitation:
+            "The answer could not be independently confirmed: the underlying aggregator " +
+            "restricts reads to whitelisted callers, and the feed did not serve a replay of " +
+            "its own latest round. The value it reports is shown below, but nothing here " +
+            "corroborates it.",
+        };
+      }
+
       pricingPath = chainlinkAdapter(config, resolved, liveValues);
       livePrice = chainlinkEntrypointValue(liveValues);
     } else {

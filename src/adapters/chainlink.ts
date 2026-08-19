@@ -44,17 +44,41 @@ function isZero(addr: unknown): boolean {
   );
 }
 
+/**
+ * An independent second read of the same answer — the verification gate.
+ * Null when neither route was available: access-controlled aggregators reject
+ * direct reads, and not every feed serves historical rounds.
+ *
+ * Null must never be coerced into a number. A fabricated value would either
+ * fake a match or fake a mismatch, and both are worse than reporting that the
+ * check could not be run.
+ */
+export interface ChainlinkCrossCheck {
+  method: "aggregator" | "round-replay";
+  value: bigint;
+}
+
 export interface ChainlinkLiveValues {
   /** answer from the entrypoint's latestRoundData() */
   answer: bigint;
   roundId: bigint;
   updatedAt: bigint;
-  /** answer read from the underlying aggregator, when there is one */
-  aggregatorAnswer: bigint | null;
-  /** answer read back from getRoundData(roundId), for a bare aggregator */
-  replayedAnswer: bigint | null;
+  /** The independent read, or null when none could be made. */
+  crossCheck: ChainlinkCrossCheck | null;
   /** chain time the read was taken at, for the staleness figure */
   blockTimestamp: bigint;
+}
+
+/**
+ * Whether the pricing path can be verified at all. The pipeline routes to the
+ * described tier when this is false rather than reporting a mismatch — "could
+ * not check" and "checked and disagreed" are different findings, and conflating
+ * them accuses the parser of a bug that isn't there.
+ */
+export function chainlinkCrossCheckAvailable(
+  live: ChainlinkLiveValues,
+): boolean {
+  return live.crossCheck !== null;
 }
 
 export function chainlinkAdapter(
@@ -68,10 +92,10 @@ export function chainlinkAdapter(
   const aggregator = config.aggregator;
   const hasAggregator = !isZero(aggregator);
 
-  // The recomputation: whichever independent read we were able to make.
-  const recomputedPrice = hasAggregator
-    ? (live.aggregatorAnswer ?? -1n)
-    : (live.replayedAnswer ?? -1n);
+  // Whichever independent read succeeded. With none, fall back to the answer
+  // itself so the number stays honest — the pipeline has already routed this
+  // to the described tier, so it is never presented as a passed verification.
+  const recomputedPrice = live.crossCheck?.value ?? live.answer;
 
   const components: PricingComponent[] = [
     {
@@ -94,12 +118,15 @@ export function chainlinkAdapter(
     },
   ];
 
-  if (hasAggregator && live.aggregatorAnswer != null) {
+  if (live.crossCheck) {
     components.push({
-      name: "aggregator",
+      name: "cross-check",
       role: "numerator",
-      value: live.aggregatorAnswer,
-      source: `${resolved.aggregator?.label ?? shortAddress(String(aggregator))}.latestRoundData().answer = ${live.aggregatorAnswer.toString()}`,
+      value: live.crossCheck.value,
+      source:
+        live.crossCheck.method === "aggregator"
+          ? `${resolved.aggregator?.label ?? shortAddress(String(aggregator))}.latestRoundData().answer = ${live.crossCheck.value.toString()}`
+          : `getRoundData(${live.roundId.toString()}).answer = ${live.crossCheck.value.toString()}`,
     });
   }
 
@@ -125,9 +152,13 @@ export function chainlinkAdapter(
     isProxy: hasAggregator,
     lastUpdatedSecondsAgo: staleSeconds,
     lastUpdatedAgo: ageInWords(live.blockTimestamp - live.updatedAt),
-    verificationStrength: hasAggregator
-      ? "proxy answer matched against the underlying aggregator"
-      : "latest answer matched against a replay of its own round id",
+    crossCheckMethod: live.crossCheck?.method ?? null,
+    verificationStrength:
+      live.crossCheck?.method === "aggregator"
+        ? "proxy answer matched against the underlying aggregator"
+        : live.crossCheck?.method === "round-replay"
+          ? "latest answer matched against a replay of its own round id"
+          : "no independent read was possible — the answer could not be confirmed",
     owner: resolved.owner?.address ?? config.owner ?? null,
     aggregatorOwner: resolved.aggregator?.aggregatorOwner ?? null,
   };
@@ -284,9 +315,10 @@ export async function readChainlinkLiveValues(
   ]);
 
   const aggregator = config.aggregator;
-  let aggregatorAnswer: bigint | null = null;
-  let replayedAnswer: bigint | null = null;
+  let crossCheck: ChainlinkCrossCheck | null = null;
 
+  // Preferred: read the aggregator the proxy points at. Strongest check —
+  // it confirms we identified the actual source of the number.
   if (!isZero(aggregator)) {
     try {
       const agg = (await client.readContract({
@@ -294,12 +326,18 @@ export async function readChainlinkLiveValues(
         abi,
         functionName: "latestRoundData",
       })) as Round;
-      aggregatorAnswer = agg[1];
+      crossCheck = { method: "aggregator", value: agg[1] };
     } catch {
-      // Some aggregators restrict reads to whitelisted callers. Leave null;
-      // the pipeline will report the path as unverified rather than guess.
+      // AccessControlledOffchainAggregator rejects direct reads from callers
+      // that are not whitelisted, which is the common case on mainnet feeds.
     }
-  } else {
+  }
+
+  // Fallback: ask the entrypoint to replay the round it just called latest.
+  // Weaker, since it is the same contract — but it exercises a different code
+  // path, and on a proxy it forwards through to the aggregator the proxy is
+  // itself whitelisted to read.
+  if (!crossCheck) {
     try {
       const replay = (await client.readContract({
         address,
@@ -307,9 +345,10 @@ export async function readChainlinkLiveValues(
         functionName: "getRoundData",
         args: [latest[0]],
       })) as Round;
-      replayedAnswer = replay[1];
+      crossCheck = { method: "round-replay", value: replay[1] };
     } catch {
-      // Historical rounds are not always retrievable.
+      // Historical rounds are not always retrievable. Leave null; the pipeline
+      // reports the path as unverifiable rather than inventing a comparison.
     }
   }
 
@@ -317,8 +356,7 @@ export async function readChainlinkLiveValues(
     answer: latest[1],
     roundId: latest[0],
     updatedAt: latest[3],
-    aggregatorAnswer,
-    replayedAnswer,
+    crossCheck,
     blockTimestamp: block.timestamp,
   };
 }

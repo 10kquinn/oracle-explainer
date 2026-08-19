@@ -9,7 +9,11 @@
 
 import { describe, it, expect } from "vitest";
 import { zeroAddress } from "viem";
-import { chainlinkAdapter, type ChainlinkLiveValues } from "../chainlink";
+import {
+  chainlinkAdapter,
+  chainlinkCrossCheckAvailable,
+  type ChainlinkLiveValues,
+} from "../chainlink";
 import type { RawConfig, ResolvedDependencies } from "../../lib/types";
 
 const AGGREGATOR = "0xE62B71cf983019BFf55bC83B48601ce8419650CC";
@@ -44,8 +48,7 @@ const PROXY_LIVE: ChainlinkLiveValues = {
   answer: 300000000000n, // 3000.00000000
   roundId: 18446744073709551616n + 42n,
   updatedAt: NOW - 600n,
-  aggregatorAnswer: 300000000000n,
-  replayedAnswer: null,
+  crossCheck: { method: "aggregator", value: 300000000000n },
   blockTimestamp: NOW,
 };
 
@@ -106,8 +109,7 @@ const BARE_LIVE: ChainlinkLiveValues = {
   answer: 1207000000000000000n, // 1.207
   roundId: 7n,
   updatedAt: NOW - 90000n,
-  aggregatorAnswer: null,
-  replayedAnswer: 1207000000000000000n,
+  crossCheck: { method: "round-replay", value: 1207000000000000000n },
   blockTimestamp: NOW,
 };
 
@@ -116,6 +118,7 @@ describe("Chainlink adapter — bare aggregator fixture", () => {
     const r = chainlinkAdapter(BARE_CONFIG, {}, BARE_LIVE);
     expect(r.recomputedPrice).toBe(1207000000000000000n);
     expect(r.derived.verificationStrength).toContain("replay");
+    expect(chainlinkCrossCheckAvailable(BARE_LIVE)).toBe(true);
   });
 
   it("states there is no proxy indirection", () => {
@@ -137,5 +140,47 @@ describe("Chainlink adapter — bare aggregator fixture", () => {
   it("reports a day-old answer in hours, which is the more useful unit", () => {
     const r = chainlinkAdapter(BARE_CONFIG, {}, BARE_LIVE);
     expect(r.derived.lastUpdatedAgo).toBe("25 hours");
+  });
+});
+
+/* ------------------------------------------------------------------ */
+
+/**
+ * The real mainnet ETH/USD proxy (0x5f4eC3Df…) points at an
+ * AccessControlledOffchainAggregator that rejects direct reads from
+ * non-whitelisted callers. An earlier version returned -1 as a sentinel here,
+ * which the pipeline then compared against the live answer and reported as a
+ * MISMATCH — telling the reader the config had been misparsed when in fact no
+ * check had run at all.
+ */
+const UNVERIFIABLE_LIVE: ChainlinkLiveValues = {
+  answer: 190853500000n,
+  roundId: 129127208515966893901n,
+  updatedAt: NOW - 2184n,
+  crossCheck: null,
+  blockTimestamp: NOW,
+};
+
+describe("Chainlink adapter — no independent read available", () => {
+  it("reports the check as unavailable rather than as a mismatch", () => {
+    expect(chainlinkCrossCheckAvailable(UNVERIFIABLE_LIVE)).toBe(false);
+  });
+
+  it("never emits a sentinel that would read as a computed value", () => {
+    const r = chainlinkAdapter(PROXY_CONFIG, PROXY_RESOLVED, UNVERIFIABLE_LIVE);
+    // -1 previously flowed into the UI as the "recomputed" price.
+    expect(r.recomputedPrice).not.toBe(-1n);
+    expect(r.recomputedPrice).toBe(190853500000n);
+  });
+
+  it("says plainly that nothing corroborates the answer", () => {
+    const r = chainlinkAdapter(PROXY_CONFIG, PROXY_RESOLVED, UNVERIFIABLE_LIVE);
+    expect(r.derived.crossCheckMethod).toBeNull();
+    expect(r.derived.verificationStrength).toContain("no independent read");
+  });
+
+  it("omits the cross-check component when there was no cross-check", () => {
+    const r = chainlinkAdapter(PROXY_CONFIG, PROXY_RESOLVED, UNVERIFIABLE_LIVE);
+    expect(r.components.map((c) => c.name)).not.toContain("cross-check");
   });
 });
