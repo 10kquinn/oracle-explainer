@@ -9,7 +9,24 @@
  * The LLM never computes a price — it only turns structured facts into English.
  */
 
+import Anthropic from "@anthropic-ai/sdk";
 import type { OracleExplanation } from "./types";
+
+/**
+ * Claude Opus 5. Two things about this model shape the call below:
+ *
+ * 1. Thinking is on by default, and max_tokens caps thinking + response text
+ *    together. The old 1500 budget would have been consumed by thinking and
+ *    truncated the prose mid-paragraph, so the budget is generous here.
+ * 2. It writes longer by default than earlier models, which is why the prompt
+ *    carries an explicit length instruction rather than relying on the
+ *    "four paragraphs" framing alone.
+ *
+ * Effort is medium deliberately: this task is turning already-verified facts
+ * into English, not deriving anything. The arithmetic happened in the adapter.
+ */
+const MODEL = "claude-opus-5";
+const MAX_TOKENS = 16000;
 
 export async function generateProse(
   explanation: OracleExplanation,
@@ -27,30 +44,51 @@ export async function generateProse(
       ? buildPrompt(explanation)
       : buildDescriptivePrompt(explanation);
 
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model: "claude-sonnet-4-20250514",
-      max_tokens: 1500,
+  const client = new Anthropic({ apiKey });
+
+  try {
+    const response = await client.messages.create({
+      model: MODEL,
+      max_tokens: MAX_TOKENS,
+      output_config: { effort: "medium" },
       messages: [{ role: "user", content: prompt }],
-    }),
-  });
+    });
 
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`Anthropic API error ${response.status}: ${text}`);
+    if (response.stop_reason === "refusal") {
+      throw new Error(
+        `Model declined to answer (${response.stop_details?.category ?? "no category"})`,
+      );
+    }
+
+    const text = response.content
+      .filter((b): b is Anthropic.TextBlock => b.type === "text")
+      .map((b) => b.text)
+      .join("\n");
+
+    if (!text.trim()) {
+      throw new Error(
+        `Model returned no text (stop_reason: ${response.stop_reason})`,
+      );
+    }
+
+    return text;
+  } catch (err) {
+    // Surface the reason rather than a bare failure — the route records this
+    // and the UI shows it, which is how the retired-model-ID bug was found.
+    if (err instanceof Anthropic.NotFoundError) {
+      throw new Error(`Model "${MODEL}" not found: ${err.message}`);
+    }
+    if (err instanceof Anthropic.AuthenticationError) {
+      throw new Error("ANTHROPIC_API_KEY was rejected");
+    }
+    if (err instanceof Anthropic.RateLimitError) {
+      throw new Error("Rate limited by the Anthropic API — retry shortly");
+    }
+    if (err instanceof Anthropic.APIError) {
+      throw new Error(`Anthropic API error ${err.status}: ${err.message}`);
+    }
+    throw err;
   }
-
-  const data = (await response.json()) as {
-    content: { type: string; text: string }[];
-  };
-
-  return data.content[0].text;
 }
 
 function buildPrompt(e: OracleExplanation): string {
@@ -124,7 +162,9 @@ Write exactly four paragraphs with these headings:
 
 The reader is already shown the step-by-step formula walkthrough above, so do not restate it move for move — go past it to the implications. Never state a price figure other than the rescaled one given above, and never do arithmetic of your own.
 
-Be precise and specific to THIS oracle's actual configuration. Do not be generic. Reference the actual resolved names, actual decimal values, actual active/disabled slots. If there are underlying oracles, explain how each one computes its price and how the wrapper selects between them.`;
+Be precise and specific to THIS oracle's actual configuration. Do not be generic. Reference the actual resolved names, actual decimal values, actual active/disabled slots. If there are underlying oracles, explain how each one computes its price and how the wrapper selects between them.
+
+Keep each paragraph to roughly 3-5 sentences. This sits in a risk memo next to the structured tables above it, so density matters more than completeness — say the thing that would change a reviewer's decision and stop. No preamble, no closing summary paragraph.`;
 }
 
 function buildUnderlyingSection(e: OracleExplanation): string {
@@ -224,5 +264,7 @@ CRITICAL CONSTRAINTS — these override any instinct to be helpful:
 - Do NOT state a price figure or do any arithmetic.
 - Do NOT reassure the reader that the oracle is safe, sound, standard, or fine. You have no basis for that.
 - Where you are inferring rather than reading, mark it plainly ("the name suggests", "this looks like").
-- If the honest answer to a section is that very little could be established, say that briefly rather than padding it.`;
+- If the honest answer to a section is that very little could be established, say that briefly rather than padding it.
+
+Keep each paragraph to roughly 3-5 sentences. No preamble and no closing summary.`;
 }
