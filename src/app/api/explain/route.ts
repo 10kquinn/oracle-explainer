@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { explainOracle } from "@/lib/pipeline";
+import { isSupportedChain } from "@/lib/chains";
+import { CHAIN_META } from "@/lib/chain-meta";
 
 // Allow up to 60s on Vercel Pro, 10s on Hobby
 export const maxDuration = 60;
@@ -23,6 +25,20 @@ export async function POST(req: NextRequest) {
     if (!/^0x[a-fA-F0-9]{40}$/.test(address)) {
       return NextResponse.json(
         { error: "Invalid address format" },
+        { status: 400 },
+      );
+    }
+
+    // Reject an unknown chain here rather than letting it surface as a
+    // pipeline fault. Coverage is bounded by which chains Etherscan's v2 API
+    // serves, so naming the supported set is the useful answer.
+    if (!isSupportedChain(chainId)) {
+      return NextResponse.json(
+        {
+          error:
+            `Chain ${chainId} is not supported. Available: ` +
+            CHAIN_META.map((c) => `${c.name} (${c.id})`).join(", "),
+        },
         { status: 400 },
       );
     }

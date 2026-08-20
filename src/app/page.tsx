@@ -1,6 +1,12 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import {
+  CHAIN_META,
+  DEFAULT_CHAIN_ID,
+  chainName,
+  explorerFor,
+} from "@/lib/chain-meta";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -66,11 +72,6 @@ interface ExplanationResult {
   underlyingOracles?: Record<string, ExplanationResult>;
 }
 
-const CHAINS = [
-  { id: 1, name: "Ethereum", explorer: "https://etherscan.io" },
-  { id: 8453, name: "Base", explorer: "https://basescan.org" },
-];
-
 const EXAMPLE_ADDRESS = "0x67BcC03438D7d71c39343d7AD21cb73Dc19aDB89";
 
 const LOADING_STEPS = [
@@ -90,7 +91,7 @@ function truncateAddress(addr: string) {
 }
 
 function explorerUrl(chainId: number) {
-  return CHAINS.find((c) => c.id === chainId)?.explorer ?? "https://etherscan.io";
+  return explorerFor(chainId);
 }
 
 function addressLink(chainId: number, addr: string) {
@@ -107,7 +108,7 @@ function txLink(chainId: number, hash: string) {
 
 export default function Home() {
   const [address, setAddress] = useState("");
-  const [chainId, setChainId] = useState(1);
+  const [chainId, setChainId] = useState(DEFAULT_CHAIN_ID);
   const [loading, setLoading] = useState(false);
   const [loadingStep, setLoadingStep] = useState(0);
   const [result, setResult] = useState<ExplanationResult | null>(null);
@@ -156,7 +157,7 @@ export default function Home() {
 
   function useExample() {
     setAddress(EXAMPLE_ADDRESS);
-    setChainId(1);
+    setChainId(DEFAULT_CHAIN_ID);
   }
 
   return (
@@ -182,7 +183,7 @@ export default function Home() {
           className="text-xs font-mono"
           style={{ color: "var(--text-tertiary)" }}
         >
-          v1 — Morpho
+          {CHAIN_META.length} chains
         </span>
       </header>
 
@@ -200,9 +201,10 @@ export default function Home() {
             className="text-sm leading-relaxed max-w-xl"
             style={{ color: "var(--text-secondary)" }}
           >
-            Paste a Morpho oracle contract address to get a verified breakdown
-            of how it computes its price, what it assumes, and what it
-            doesn&apos;t check.
+            Paste an oracle contract address to get a verified breakdown of how
+            it computes its price, what it assumes, and what it doesn&apos;t
+            check. Morpho and Chainlink oracles are computed and verified;
+            anything else is described from what the chain exposes.
           </p>
         </div>
 
@@ -236,7 +238,7 @@ export default function Home() {
                 color: "var(--text-secondary)",
               }}
             >
-              {CHAINS.map((c) => (
+              {CHAIN_META.map((c) => (
                 <option key={c.id} value={c.id}>
                   {c.name}
                 </option>
@@ -418,7 +420,7 @@ const TIER_STYLE: Record<
 /* ------------------------------------------------------------------ */
 
 function ResultView({ result }: { result: ExplanationResult }) {
-  const chain = CHAINS.find((c) => c.id === result.chainId);
+  const chain = { name: chainName(result.chainId) };
   const tier = TIER_STYLE[result.tier] ?? TIER_STYLE.described;
   const path = result.pricingPath;
 
@@ -474,7 +476,7 @@ function ResultView({ result }: { result: ExplanationResult }) {
               color: "var(--text-tertiary)",
             }}
           >
-            {chain?.name ?? `Chain ${result.chainId}`}
+            {chain.name}
           </span>
         </div>
       </div>
