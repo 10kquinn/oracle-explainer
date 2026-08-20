@@ -62,9 +62,7 @@ interface ExplanationResult {
   tier: "verified-path" | "path-mismatch" | "described" | "opaque";
   explanation: FormulaExplanation;
   limitation: string | null;
-  proseError?: string | null;
   creator: { address: string; txHash: string } | null;
-  prose: string | null;
   underlyingOracles?: Record<string, ExplanationResult>;
 }
 
@@ -81,7 +79,6 @@ const LOADING_STEPS = [
   "Resolving dependencies",
   "Computing pricing path",
   "Verifying against chain",
-  "Generating explanation",
 ];
 
 /* ------------------------------------------------------------------ */
@@ -290,8 +287,8 @@ export default function Home() {
           className="text-xs font-mono"
           style={{ color: "var(--text-tertiary)" }}
         >
-          Adapters compute pricing paths deterministically. The LLM only writes
-          prose.
+          Every pricing path is recomputed from on-chain config and checked
+          against the live contract. Nothing here is generated.
         </p>
       </footer>
     </div>
@@ -502,43 +499,11 @@ function ResultView({ result }: { result: ExplanationResult }) {
           </Section>
         )}
 
-        {/* Prose */}
-        {result.prose && (
-          <Section title="Explanation" first={!result.limitation}>
-            <div
-              className="text-sm leading-[1.7] whitespace-pre-wrap"
-              style={{ color: "var(--text)" }}
-            >
-              {result.prose}
-            </div>
-          </Section>
-        )}
-
-        {/* Prose was attempted and failed — say so rather than showing a gap.
-            Everything below is deterministic and unaffected. */}
-        {!result.prose && result.proseError && (
-          <Section title="Explanation unavailable" first={!result.limitation}>
-            <p
-              className="text-sm leading-relaxed mb-2"
-              style={{ color: "var(--text-secondary)" }}
-            >
-              The written explanation could not be generated. Everything below
-              is computed deterministically and is unaffected.
-            </p>
-            <p
-              className="text-xs font-mono break-all"
-              style={{ color: "var(--text-tertiary)" }}
-            >
-              {result.proseError}
-            </p>
-          </Section>
-        )}
-
         {/* Formula — only exists when an adapter ran */}
         {path && (
           <Section
             title="Pricing formula"
-            first={!result.limitation && !result.prose}
+            first={!result.limitation}
           >
             <pre
               className="font-mono text-sm overflow-x-auto"
@@ -552,7 +517,7 @@ function ResultView({ result }: { result: ExplanationResult }) {
         {/* Plain English — always present, whatever the tier */}
         <Section
           title="In plain English"
-          first={!result.limitation && !result.prose && !path}
+          first={!result.limitation && !path}
         >
           <FormulaInPlainEnglish explanation={result.explanation} bare />
         </Section>

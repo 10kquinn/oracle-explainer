@@ -1,7 +1,7 @@
 /**
  * The explain pipeline.
  * Orchestrates: resolve proxy -> fetch source -> classify -> read config
- * -> resolve deps -> adapter -> verify -> (optional) LLM prose.
+ * -> resolve deps -> adapter -> verify.
  *
  * The pipeline never throws for an address it cannot fully explain. Every
  * address lands in a tier (see ExplanationTier) and every tier produces plain
@@ -125,8 +125,6 @@ export async function explainOracle(
       explanation: describeOpaque({ address: addr, reason }),
       limitation: `Source code is not available: ${reason}`,
       creator,
-      prose: null,
-      proseError: null,
     };
   }
 
@@ -149,8 +147,6 @@ export async function explainOracle(
     config,
     resolved,
     creator,
-    prose: null,
-    proseError: null,
   };
 
   // Step 5: Families with no adapter stop at a description. Their entrypoints

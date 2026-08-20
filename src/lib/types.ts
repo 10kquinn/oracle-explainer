@@ -103,13 +103,6 @@ export interface OracleExplanation {
   limitation: string | null;
   /** Creator info */
   creator: { address: string; txHash: string } | null;
-  /** LLM-generated prose. Null when generation was skipped or failed. */
-  prose: string | null;
-  /**
-   * Why prose is missing, when it is. Swallowing this made a blank section
-   * indistinguishable from a section that was never attempted.
-   */
-  proseError: string | null;
   /** Recursive explanations of underlying oracles (for wrapper types like MetaOracle) */
   underlyingOracles?: Record<string, OracleExplanation>;
 }

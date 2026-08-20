@@ -7,9 +7,11 @@ Full design rationale and the Morpho adapter reference: @oracle-explainer-spec.m
 
 ## Non-negotiable rules
 
-1. **The LLM never computes a price.** Adapters compute pricing paths deterministically
-   in code. The model only turns structured facts into prose. A fluent wrong answer is
-   worse than no answer here — the output is intended for due-diligence memos.
+1. **Nothing in the output is generated.** Adapters compute pricing paths
+   deterministically in code, and the plain-English walkthrough is written by the
+   adapter from parsed config — not by a model. A fluent wrong answer is worse than no
+   answer here, because the output is intended for due-diligence memos. There is no LLM
+   in the request path; keep it that way.
 
 2. **Every explanation is gated on a verification check.** Recompute `price()` (or the
    family's equivalent entrypoint) from parsed config and compare against the live
@@ -28,8 +30,7 @@ Full design rationale and the Morpho adapter reference: @oracle-explainer-spec.m
 
 ## Stack
 
-Next.js, viem, Etherscan v2 multichain API (single key, all chains), Anthropic API for
-the prose layer only.
+Next.js, viem, Etherscan v2 multichain API (single key, all chains). No LLM dependency.
 
 ## Conventions
 
