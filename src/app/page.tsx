@@ -1049,12 +1049,16 @@ function PriceHeadline({
         {" = "}
         {human.value} {human.quoteSymbol ?? "loan tokens"}
       </div>
-      {human.usdLike && (
-        <div className="text-xs mt-1" style={{ color: "var(--text-tertiary)" }}>
-          Denominated in the loan asset
-          {human.quoteSymbol ? ` (${human.quoteSymbol})` : ""}, not in USD.
-        </div>
-      )}
+      {/* The point of this caption is that a dollar sign does not mean dollars.
+          When the quote unit IS "USD" — a Chainlink USD feed — there is no gap
+          to explain, and the sentence contradicts itself. */}
+      {human.usdLike &&
+        human.quoteSymbol &&
+        human.quoteSymbol.toUpperCase() !== "USD" && (
+          <div className="text-xs mt-1" style={{ color: "var(--text-tertiary)" }}>
+            Denominated in the loan asset ({human.quoteSymbol}), not in USD.
+          </div>
+        )}
     </div>
   );
 }
