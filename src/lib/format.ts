@@ -6,7 +6,7 @@
  * Dividing the raw uint256 back out by that exponent recovers the ratio a human
  * reads: "1 sUSDe = 1.24401743 USDe".
  *
- * This is arithmetic, not narration — the LLM never touches it.
+ * This is arithmetic, not narration.
  */
 
 /** Symbols whose unit is close enough to a dollar that a "$" prefix is honest. */
