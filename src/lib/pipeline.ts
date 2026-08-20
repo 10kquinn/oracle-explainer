@@ -11,7 +11,11 @@
 
 import { type Address, getAddress } from "viem";
 import { getClient } from "./chains";
-import { getContractSource, getContractCreation } from "./etherscan";
+import {
+  getContractSource,
+  getContractCreation,
+  ContractNotVerifiedError,
+} from "./etherscan";
 import { resolveImplementation } from "./proxy";
 import { classifyOracle } from "./classify";
 import { readOracleConfig, readLivePrice } from "./reader";
@@ -98,7 +102,15 @@ export async function explainOracle(
       );
     }
   } catch (err) {
-    const reason = err instanceof Error ? err.message : "unknown error";
+    // Only an actually-unpublished source is the opaque tier. Anything else —
+    // a throttled explorer, a network blip — is our problem, not a finding
+    // about the contract, and gets surfaced as a failed request the user can
+    // retry rather than a verdict they might write down.
+    if (!(err instanceof ContractNotVerifiedError)) {
+      throw err;
+    }
+
+    const reason = err.message;
     return {
       address: addr,
       chainId,
@@ -179,10 +191,14 @@ export async function explainOracle(
       const primaryAddr = config.primaryOracle as string;
       const backupAddr = config.backupOracle as string;
       if (primaryAddr && backupAddr) {
-        const [primaryExplanation, backupExplanation] = await Promise.all([
-          explainOracle(primaryAddr, chainId).catch(() => null),
-          explainOracle(backupAddr, chainId).catch(() => null),
-        ]);
+        const primaryExplanation = await explainOracle(
+          primaryAddr,
+          chainId,
+        ).catch(() => null);
+        const backupExplanation = await explainOracle(
+          backupAddr,
+          chainId,
+        ).catch(() => null);
         underlyingOracles = {};
         if (primaryExplanation) underlyingOracles.primary = primaryExplanation;
         if (backupExplanation) underlyingOracles.backup = backupExplanation;

@@ -5,6 +5,62 @@
 
 const BASE_URL = "https://api.etherscan.io/v2/api";
 
+/**
+ * A contract with no published source is a finding; a throttled explorer is a
+ * traffic problem. Reporting the second as the first tells a reviewer that a
+ * perfectly ordinary verified contract is opaque, which is worse than saying
+ * nothing — so the two are distinct error types all the way up.
+ */
+export class EtherscanUnavailableError extends Error {
+  readonly transient = true;
+  constructor(message: string) {
+    super(message);
+    this.name = "EtherscanUnavailableError";
+  }
+}
+
+export class ContractNotVerifiedError extends Error {
+  readonly transient = false;
+  constructor(message: string) {
+    super(message);
+    this.name = "ContractNotVerifiedError";
+  }
+}
+
+/**
+ * Etherscan's free tier allows 5 requests/second. Nothing in this codebase
+ * calls it once: dependency resolution fans out, and a MetaOracle recurses
+ * into both underlying oracles via Promise.all — so the tool rate-limits
+ * itself before any other user does. Every call goes through one promise chain
+ * spaced by MIN_INTERVAL_MS, which caps the whole process below the limit
+ * regardless of how many callers run concurrently.
+ */
+const MIN_INTERVAL_MS = 220;
+let queue: Promise<unknown> = Promise.resolve();
+
+function throttle<T>(fn: () => Promise<T>): Promise<T> {
+  const result = queue.then(fn, fn);
+  // Advance the chain on a timer, and swallow rejections so one failed call
+  // does not poison every request queued behind it.
+  queue = result.then(
+    () => new Promise((r) => setTimeout(r, MIN_INTERVAL_MS)),
+    () => new Promise((r) => setTimeout(r, MIN_INTERVAL_MS)),
+  );
+  return result;
+}
+
+const MAX_ATTEMPTS = 4;
+
+/** Exported for tests — Etherscan signals throttling in prose, not status codes. */
+export function isRateLimited(message: string, result: unknown): boolean {
+  const haystack = `${message} ${typeof result === "string" ? result : ""}`.toLowerCase();
+  return (
+    haystack.includes("rate limit") ||
+    haystack.includes("max calls per sec") ||
+    haystack.includes("too many requests")
+  );
+}
+
 interface EtherscanSourceResult {
   SourceCode: string;
   ABI: string;
@@ -45,15 +101,52 @@ async function etherscanFetch(
     url.searchParams.set(k, v);
   }
 
-  const res = await fetch(url.toString());
-  if (!res.ok) throw new Error(`Etherscan HTTP ${res.status}`);
-  const json = (await res.json()) as { status: string; result: unknown; message: string };
+  let lastError = "";
 
-  if (json.status !== "1") {
-    throw new Error(`Etherscan error: ${json.message} — ${JSON.stringify(json.result)}`);
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const outcome = await throttle(async () => {
+      const res = await fetch(url.toString());
+
+      if (res.status === 429 || res.status >= 500) {
+        return { retry: true as const, reason: `Etherscan HTTP ${res.status}` };
+      }
+      if (!res.ok) {
+        throw new EtherscanUnavailableError(`Etherscan HTTP ${res.status}`);
+      }
+
+      const json = (await res.json()) as {
+        status: string;
+        result: unknown;
+        message: string;
+      };
+
+      if (json.status !== "1") {
+        if (isRateLimited(json.message, json.result)) {
+          return { retry: true as const, reason: json.message };
+        }
+        // A real API-level rejection — a bad address, an unsupported chain.
+        // Not retryable, and not a claim about the contract's source.
+        throw new EtherscanUnavailableError(
+          `Etherscan error: ${json.message} — ${JSON.stringify(json.result)}`,
+        );
+      }
+
+      return { retry: false as const, value: json.result };
+    });
+
+    if (!outcome.retry) return outcome.value;
+
+    lastError = outcome.reason;
+    if (attempt < MAX_ATTEMPTS) {
+      // Back off before the next attempt. The throttle already spaces calls,
+      // so this only needs to cover a burst that outran the limiter.
+      await new Promise((r) => setTimeout(r, 400 * attempt));
+    }
   }
 
-  return json.result;
+  throw new EtherscanUnavailableError(
+    `Etherscan is rate-limiting requests (${lastError}). This is transient — retry shortly.`,
+  );
 }
 
 export async function getContractSource(
@@ -68,7 +161,9 @@ export async function getContractSource(
 
   const r = result[0];
   if (!r || !r.ABI || r.ABI === "Contract source code not verified") {
-    throw new Error(`Contract not verified: ${address}`);
+    throw new ContractNotVerifiedError(
+      `Contract source code is not published for ${address}`,
+    );
   }
 
   return {

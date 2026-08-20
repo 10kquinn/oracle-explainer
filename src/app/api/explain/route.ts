@@ -59,6 +59,17 @@ export async function POST(req: NextRequest) {
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
     console.error("Pipeline error:", message);
-    return NextResponse.json({ error: message }, { status: 500 });
+
+    // A throttled or unreachable block explorer is worth retrying; a genuine
+    // pipeline fault is not. Distinguish them so the client can tell.
+    const transient =
+      typeof err === "object" &&
+      err !== null &&
+      (err as { transient?: boolean }).transient === true;
+
+    return NextResponse.json(
+      { error: message, retryable: transient },
+      { status: transient ? 503 : 500 },
+    );
   }
 }
