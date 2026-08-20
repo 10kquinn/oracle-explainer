@@ -73,6 +73,17 @@ describe("Chainlink adapter — proxy fixture", () => {
     expect(r.formulaExplanation.summary).toContain("Nothing is computed on demand");
   });
 
+  it("names an unlabelled aggregator once, not twice", () => {
+    const r = chainlinkAdapter(
+      PROXY_CONFIG,
+      { aggregator: { ...PROXY_RESOLVED.aggregator, label: null } },
+      PROXY_LIVE,
+    );
+    const step = r.formulaExplanation.steps[0];
+    const addr = "0xE62B…50CC";
+    expect(step.split(addr).length - 1).toBe(1);
+  });
+
   it("explains the proxy indirection and reports the answer's age", () => {
     const r = chainlinkAdapter(PROXY_CONFIG, PROXY_RESOLVED, PROXY_LIVE);
     const steps = r.formulaExplanation.steps.join(" ");

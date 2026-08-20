@@ -216,13 +216,16 @@ function explainChainlink(ctx: {
   const steps: string[] = [];
 
   if (hasAggregator) {
-    const aggLabel =
-      resolved.aggregator?.label ?? shortAddress(String(config.aggregator));
+    const addr = shortAddress(String(config.aggregator));
+    // Naming it twice ("0x7d4E…6Fb5 (0x7d4E…6Fb5)") is what happens when the
+    // aggregator publishes no description to label it with.
+    const aggLabel = resolved.aggregator?.label
+      ? `${resolved.aggregator.label} (${addr})`
+      : addr;
     steps.push(
       `The address you pasted is a proxy. It holds no price of its own — it forwards every read ` +
-        `to the aggregator it currently points at, ${aggLabel} ` +
-        `(${shortAddress(String(config.aggregator))}). Consumers hold the proxy address because ` +
-        `it stays constant; the aggregator behind it can be replaced.`,
+        `to the aggregator it currently points at, ${aggLabel}. Consumers hold the proxy address ` +
+        `because it stays constant; the aggregator behind it can be replaced.`,
     );
   } else {
     steps.push(
